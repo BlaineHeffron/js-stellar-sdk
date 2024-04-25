@@ -1,13 +1,13 @@
 const test = require('ava')
 const { Address } = require('../../..')
 const { Ok, Err } = require('../../../lib/rust_types')
-const { clientFor } = require('./util')
+const { clientFor, clientForFromTest, rpcUrl } = require('./util')
 
 test.before(async t => {
-  const { client, keypair } = await clientFor('customTypes')
+  const { client, keypair, contractId } = await clientFor('customTypes')
   const publicKey = keypair.publicKey()
   const addr = Address.fromString(publicKey)
-  t.context = { client, publicKey, addr } // eslint-disable-line no-param-reassign
+  t.context = { client, publicKey, addr, contractId } // eslint-disable-line no-param-reassign
 });
 
 test('hello', async t => {
@@ -127,6 +127,18 @@ test('boolean', async t => {
 test('not', async t => {
   t.is((await t.context.client.not({ boolean: true })).result, false)
 })
+
+test('from', async (t) => {
+  function flattenInstance(object) {
+    return JSON.parse(JSON.stringify(object));
+  }
+
+  const { clientFromConstructor, clientFromFrom } = await clientForFromTest("customTypes", { contractId: t.context.contractId });
+  console.log(flattenInstance(clientFromConstructor));
+  console.log(flattenInstance(clientFromFrom));
+  t.deepEqual(flattenInstance(clientFromFrom), flattenInstance(clientFromConstructor));
+});
+
 
 test('i128', async t => {
   t.is((await t.context.client.i128({ i128: -1n })).result, -1n)
