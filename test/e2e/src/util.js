@@ -140,7 +140,7 @@ module.exports.friendbotUrl = friendbotUrl;
 
 async function generateFundedKeypair() {
   const keypair = Keypair.random();
-  await fetch(`${friendbotUrl}/friendbot?addr=${keypair.publicKey()}`);
+  await fetch(`${friendbotUrl}/?addr=${keypair.publicKey()}`);
   return keypair;
 }
 module.exports.generateFundedKeypair = generateFundedKeypair;
