@@ -15,6 +15,14 @@ test('hello', async t => {
   t.is(result, 'tests')
 })
 
+test("view method with empty keypair", async (t) => {
+  const { client: client2 } = await clientFor('customTypes', {
+    keypair: undefined,
+    contractId: t.context.contractId
+  });
+  t.is((await client2.hello({ hello: "anonymous" })).result, "anonymous");
+});
+
 test('woid', async t => {
   t.is((await t.context.client.woid()).result, null)
 })
