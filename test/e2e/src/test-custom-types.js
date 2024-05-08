@@ -7,7 +7,7 @@ test.before(async t => {
   const { client, keypair, contractId } = await clientFor('customTypes')
   const publicKey = keypair.publicKey()
   const addr = Address.fromString(publicKey)
-  t.context = { client, publicKey, addr, contractId } // eslint-disable-line no-param-reassign
+  t.context = { client, publicKey, addr, contractId, keypair } // eslint-disable-line no-param-reassign
 });
 
 test('hello', async t => {
@@ -141,10 +141,9 @@ test('from', async (t) => {
     return JSON.parse(JSON.stringify(object));
   }
 
-  const { clientFromConstructor, clientFromFrom } = await clientForFromTest("customTypes", { contractId: t.context.contractId });
-  console.log(flattenInstance(clientFromConstructor));
-  console.log(flattenInstance(clientFromFrom));
-  t.deepEqual(flattenInstance(clientFromFrom), flattenInstance(clientFromConstructor));
+  const clientFromFrom = await clientForFromTest(t.context.contractId, t.context.publicKey, t.context.keypair);
+  t.deepEqual(flattenInstance(clientFromFrom), flattenInstance(t.context.client));
+  t.deepEqual(t.context.client.spec.entries, clientFromFrom.spec.entries);
 });
 
 

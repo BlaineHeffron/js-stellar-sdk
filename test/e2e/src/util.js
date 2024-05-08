@@ -211,72 +211,20 @@ async function clientFor(
 module.exports.clientFor = clientFor;
 
 /**
- * Generates a ContractClient for the contract with the given name.
- * Also generates a new account to use as as the keypair of this contract. This
- * account is funded by friendbot. You can pass in an account to re-use the
- * same account with multiple contract clients.
- * Also returns a ContractClient using the from method which should be 
- * identical to the generated ContractClient.
- *
- * By default, will re-deploy the contract every time. Pass in the same
- * `contractId` again if you want to re-use the a contract instance.
+ * Generates a ContractClient given the contractId using the from method.
  */
-async function clientForFromTest(
-  contract,
-  { keypair = generateFundedKeypair(), contractId } = {},
-) {
-  if (!contracts[contract]) {
-    throw new Error(
-      `Contract ${contract} not found. ` +
-      `Pick one of: ${Object.keys(contracts).join(", ")}`,
-    );
-  }
-
+async function clientForFromTest(contractId, publicKey, keypair) {
   keypair = await keypair; // eslint-disable-line no-param-reassign
   const wallet = basicNodeSigner(keypair, networkPassphrase);
-
-  const spec = new ContractSpec(contracts[contract].xdr);
-
-  const wasmHash = contracts[contract].hash;
-  if (!wasmHash) {
-    throw new Error(
-      `No wasm hash found for \`contracts[${contract}]\`! ${JSON.stringify(contracts[contract], null, 2)}`,
-    );
-  }
-
-  contractId =
-    contractId ??
-    runCommand(
-      "./target/bin/soroban",
-      [
-        // eslint-disable-line no-param-reassign
-        "contract",
-        "deploy",
-        "--source",
-        keypair.secret(),
-        "--wasm-hash",
-        wasmHash,
-      ],
-      { shell: true, encoding: "utf8" },
-    );
-
   const options = {
     networkPassphrase,
     contractId,
     rpcUrl,
     allowHttp: true,
-    publicKey: keypair.publicKey(),
+    publicKey,
     ...wallet,
   };
-
-  const clientFromConstructor = new ContractClient(spec, options);
-  const clientFromFrom = await ContractClient.from(options);
-
-  return {
-    keypair,
-    clientFromConstructor,
-    clientFromFrom,
-    contractId,
-  };
+  const client = await ContractClient.from(options);
+  return client;
 }
 module.exports.clientForFromTest = clientForFromTest;
