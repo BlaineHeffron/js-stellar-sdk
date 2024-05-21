@@ -5,6 +5,7 @@ import {
   BASE_FEE,
   Contract,
   Operation,
+  SorobanDataBuilder,
   StrKey,
   TransactionBuilder,
   authorizeEntry,
@@ -307,6 +308,7 @@ export class AssembledTransaction<T> {
    */
   static Errors = {
     ExpiredState: class ExpiredStateError extends Error { },
+    RestoreFailure: class RestoreFailureError extends Error { },
     NeedsMoreSignatures: class NeedsMoreSignaturesError extends Error { },
     NoSignatureNeeded: class NoSignatureNeededError extends Error { },
     NoUnsignedNonInvokerAuthEntries: class NoUnsignedNonInvokerAuthEntriesError extends Error { },
@@ -372,6 +374,18 @@ export class AssembledTransaction<T> {
     });
   }
 
+  private static async getAccount<T>(options: AssembledTransactionOptions<T>, server?: Server): Promise<Account> {
+    if(!server){
+      server = new Server(options.rpcUrl, {
+        allowHttp: options.allowHttp ?? false,
+      });
+    }
+    const account = options.publicKey
+      ? await server.getAccount(options.publicKey)
+      : new Account(NULL_ACCOUNT, "0");
+    return account;
+  }
+
   /**
    * Construct a new AssembledTransaction. This is the only way to create a new
    * AssembledTransaction; the main constructor is private.
@@ -396,9 +410,7 @@ export class AssembledTransaction<T> {
     const tx = new AssembledTransaction(options);
     const contract = new Contract(options.contractId);
 
-    const account = options.publicKey
-      ? await tx.server.getAccount(options.publicKey)
-      : new Account(NULL_ACCOUNT, "0");
+    const account = await AssembledTransaction.getAccount(options, tx.server);
 
     tx.raw = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
@@ -407,12 +419,34 @@ export class AssembledTransaction<T> {
       .addOperation(contract.call(options.method, ...(options.args ?? [])))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
 
-    if (options.simulate) await tx.simulate();
+    
+    if (options.simulate){
+      const restore = options.restore ?? false;
+      await tx.simulate(restore, account);
+    }
 
     return tx;
   }
 
-  simulate = async (): Promise<this> => {
+
+  private static buildFootprintRestoreTransaction<T>(
+    options: AssembledTransactionOptions<T>,
+    sorobanData: SorobanDataBuilder,
+    account: Account,
+    fee: string,
+  ): AssembledTransaction<T> {
+    const tx = new AssembledTransaction(options);
+    tx.raw = new TransactionBuilder(account, { 
+      fee,
+      networkPassphrase: options.networkPassphrase,
+    })
+      .setSorobanData(sorobanData.build())
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+    return tx;
+  }
+
+  simulate = async (restore?: boolean, account?: Account): Promise<this> => {
     if (!this.raw) {
       throw new Error(
         "Transaction has not yet been assembled; " +
@@ -420,9 +454,29 @@ export class AssembledTransaction<T> {
       );
     }
 
+    restore = restore ?? this.options.restore;
     this.built = this.raw.build();
     this.simulation = await this.server.simulateTransaction(this.built);
 
+    if (Api.isSimulationRestore(this.simulation) && restore) {
+      if(!account) account = await AssembledTransaction.getAccount(this.options, this.server);
+      const result = await this.restoreFootprint(this.simulation.restorePreamble, account);
+      if(result.status === Api.GetTransactionStatus.SUCCESS){
+        // need to rebuild the transaction with bumped account sequence number
+        account.incrementSequenceNumber();
+        const contract = new Contract(this.options.contractId);
+        this.raw = new TransactionBuilder(account, {
+          fee: this.options.fee ?? BASE_FEE,
+          networkPassphrase: this.options.networkPassphrase,
+        })
+          .addOperation(contract.call(this.options.method, ...(this.options.args ?? [])))
+          .setTimeout(this.options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+        await this.simulate();
+        return this;
+      }
+      throw new AssembledTransaction.Errors.RestoreFailure(
+        `You need to restore some contract state before invoking this method. Automatic restore failed:\n${JSON.stringify(result)}`);
+    }
     if (Api.isSimulationSuccess(this.simulation)) {
       this.built = assembleTransaction(
         this.built,
@@ -745,5 +799,25 @@ export class AssembledTransaction<T> {
       .footprint()
       .readWrite().length;
     return authsCount === 0 && writeLength === 0;
+  }
+
+
+  /**
+   * Creates a transaction to restore the footprint of the expired transaction
+   * data. Will await signature and then awaits the response. 
+   */
+  async restoreFootprint(restorePreamble: {minResourceFee: string; transactionData: SorobanDataBuilder;}, account: Account): Promise<Api.GetTransactionResponse> {
+    const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
+      {...this.options}, 
+      restorePreamble.transactionData, 
+      account, 
+      restorePreamble.minResourceFee
+    );
+    const sentTransaction = await restoreTx.signAndSend()
+    if(!sentTransaction.getTransactionResponse){
+      //todo make better error message
+      throw new AssembledTransaction.Errors.RestoreFailure(`Failure during restore. \n${JSON.stringify(sentTransaction)}`);
+    }
+    return sentTransaction.getTransactionResponse;
   }
 }

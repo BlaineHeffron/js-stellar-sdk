@@ -90,6 +90,12 @@ export type ClientOptions = {
    * @default {}
    */
   errorTypes?: Record<number, { message: string }>;
+  /**
+   * If true, will automatically attempt to restore the contract footprint
+   * and wasm hash as needed if the contract or its footprint has been 
+   * archived. @default false
+   */
+  restore?: boolean;
 };
 
 export type MethodOptions = {
@@ -109,6 +115,12 @@ export type MethodOptions = {
    * AssembledTransaction. Default: true
    */
   simulate?: boolean;
+
+  /**
+   * If true, will automatically attempt to restore the transaction if there 
+   * are archived entries that need renewal. @default false
+   */
+  restore?: boolean;
 };
 
 export type AssembledTransactionOptions<T = string> = MethodOptions &
