@@ -471,6 +471,7 @@ export class AssembledTransaction<T> {
         })
           .addOperation(contract.call(this.options.method, ...(this.options.args ?? [])))
           .setTimeout(this.options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+        // todo: might not need to resimulate, could just copy simulation result
         await this.simulate();
         return this;
       }
@@ -813,7 +814,7 @@ export class AssembledTransaction<T> {
       account, 
       restorePreamble.minResourceFee
     );
-    const sentTransaction = await restoreTx.signAndSend()
+    const sentTransaction = await restoreTx.signAndSend({force: true})
     if(!sentTransaction.getTransactionResponse){
       //todo make better error message
       throw new AssembledTransaction.Errors.RestoreFailure(`Failure during restore. \n${JSON.stringify(sentTransaction)}`);
