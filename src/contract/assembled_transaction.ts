@@ -366,6 +366,7 @@ export class AssembledTransaction<T> {
 
   private constructor(public options: AssembledTransactionOptions<T>) {
     this.options.simulate = this.options.simulate ?? true;
+    this.options.restore = this.options.restore ?? false;
     this.server = new Server(this.options.rpcUrl, {
       allowHttp: this.options.allowHttp ?? false,
     });
@@ -449,10 +450,14 @@ export class AssembledTransaction<T> {
       );
     }
     if (Api.isSimulationError(simulation)) {
+      console.log(simulation.error);
+      console.log(JSON.stringify(simulation.error));
       throw new Error(`Transaction simulation failed: "${simulation.error}"`);
     }
 
     if (Api.isSimulationRestore(simulation)) {
+      console.log(simulation.restorePreamble);
+      console.log(JSON.stringify(simulation.restorePreamble));
       throw new AssembledTransaction.Errors.ExpiredState(
         `You need to restore some contract state before you can invoke this method. ${JSON.stringify(
           simulation,
