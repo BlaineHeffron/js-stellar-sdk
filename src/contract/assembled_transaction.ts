@@ -573,6 +573,7 @@ export class AssembledTransaction<T> {
   signAndSend = async ({
     force = false,
     signTransaction = this.options.signTransaction,
+    updateTimeout = true,
   }: {
     /**
      * If `true`, sign and send the transaction even if it is a read call
@@ -582,6 +583,11 @@ export class AssembledTransaction<T> {
      * You must provide this here if you did not provide one before
      */
     signTransaction?: ClientOptions["signTransaction"];
+    /**
+     * Whether or not to update the timeout value before signing 
+     * and sending the transaction
+     */
+    updateTimeout?: boolean;
   } = {}): Promise<SentTransaction<T>> => {
     if (!this.built) {
       throw new Error("Transaction has not yet been simulated");
@@ -609,7 +615,7 @@ export class AssembledTransaction<T> {
     }
 
     const typeChecked: AssembledTransaction<T> = this;
-    const sent = await SentTransaction.init(signTransaction, typeChecked);
+    const sent = await SentTransaction.init(signTransaction, typeChecked, updateTimeout);
     return sent;
   };
 
@@ -814,7 +820,7 @@ export class AssembledTransaction<T> {
       account, 
       restorePreamble.minResourceFee
     );
-    const sentTransaction = await restoreTx.signAndSend({force: true})
+    const sentTransaction = await restoreTx.signAndSend({updateTimeout: false})
     if(!sentTransaction.getTransactionResponse){
       //todo make better error message
       throw new AssembledTransaction.Errors.RestoreFailure(`Failure during restore. \n${JSON.stringify(sentTransaction)}`);
