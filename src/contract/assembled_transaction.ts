@@ -950,6 +950,7 @@ export class AssembledTransaction<T> {
     console.log("about to sign and send the restore transaction");
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
+      force: true,
     });
     console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
