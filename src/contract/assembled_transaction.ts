@@ -543,7 +543,7 @@ export class AssembledTransaction<T> {
       );
     }
     if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
-      //contract expired needs restoration
+      // contract expired needs restoration
       if (!account)
         account = await AssembledTransaction.getAccount(
           this.options,
@@ -940,6 +940,10 @@ export class AssembledTransaction<T> {
     },
     account: Account
   ): Promise<Api.GetTransactionResponse> {
+    if(!this.options.signTransaction){
+      throw new Error("You must provide a signTransaction function, either when calling " +
+        "`signAndSend` or when initializing your Client");
+    }
     const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
@@ -949,6 +953,7 @@ export class AssembledTransaction<T> {
     restoreTx.built = restoreTx.raw!.build();
     console.log("about to sign and send the restore transaction");
     const sentTransaction = await restoreTx.signAndSend({
+      signTransaction: this.options.signTransaction,
       updateTimeout: false,
       force: true,
     });
@@ -978,7 +983,11 @@ export class AssembledTransaction<T> {
     console.log("about to sign and send the restore contract transaction");
     // simulate to get fee
     await restoreTx.simulate();
-    const sentTransaction = await restoreTx.signAndSend();
+    const sentTransaction = await restoreTx.signAndSend(
+      {
+        signTransaction: this.options.signTransaction
+      }
+    );
     console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
       // todo make better error message
