@@ -990,7 +990,7 @@ export class AssembledTransaction<T> {
     );
     console.log("about to sign and send the restore contract transaction");
     console.log(`account sequence number is ${account.sequenceNumber}`);
-    const account2 = AssembledTransaction.getAccount(this.options, this.server);
+    const account2 = await AssembledTransaction.getAccount(this.options, this.server);
     console.log(`account2 sequence number is ${account2.sequenceNumber}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
