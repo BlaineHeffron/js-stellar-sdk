@@ -503,6 +503,7 @@ export class AssembledTransaction<T> {
         "call `AssembledTransaction.build` first."
       );
     }
+    console.log("simulating");
 
     restore = restore ?? this.options.restore;
     this.built = this.raw.build();
@@ -986,6 +987,7 @@ export class AssembledTransaction<T> {
       account,
       this.server
     );
+    console.log(`should have built: ${restoreTx.built}`);
     console.log("about to sign and send the restore contract transaction");
     const sentTransaction = await restoreTx.signAndSend();
     console.log("sent it");
