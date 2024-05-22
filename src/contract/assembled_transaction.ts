@@ -493,7 +493,6 @@ export class AssembledTransaction<T> {
       .setSorobanData(sorobanData.build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
-    tx.simulate();
     return tx;
   }
 
@@ -945,13 +944,17 @@ export class AssembledTransaction<T> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
+    // first try restoring the contract
+    const contractRestoreResult = await this.restoreContract(account);
+    console.log(contractRestoreResult);
     const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
       account,
       restorePreamble.minResourceFee
     );
-    console.log("about to sign and send the restore transaction");
+    restoreTx.built = restoreTx.raw!.build();
+    console.log(`about to sign and send the restore transaction with fee ${restorePreamble.minResourceFee}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
       force: true,
