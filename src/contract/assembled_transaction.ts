@@ -475,7 +475,7 @@ export class AssembledTransaction<T> {
       .setSorobanData(new SorobanDataBuilder().setReadWrite([contractLedgerKey, wasmLedgerKey.entries[0].key]).build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
-    tx.simulate(false);
+    await tx.simulate(false);
     return tx;
   }
 
@@ -987,7 +987,6 @@ export class AssembledTransaction<T> {
       account,
       this.server
     );
-    console.log(`should have built: ${restoreTx.built}`);
     console.log("about to sign and send the restore contract transaction");
     const sentTransaction = await restoreTx.signAndSend();
     console.log("sent it");
