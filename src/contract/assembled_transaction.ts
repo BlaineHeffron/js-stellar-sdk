@@ -475,7 +475,7 @@ export class AssembledTransaction<T> {
       .setSorobanData(new SorobanDataBuilder().setReadWrite([contractLedgerKey, wasmLedgerKey.entries[0].key]).build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
-    tx.simulate();
+    tx.simulate(false);
     return tx;
   }
 
@@ -509,6 +509,7 @@ export class AssembledTransaction<T> {
     this.simulation = await this.server.simulateTransaction(this.built);
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
+      console.log('transaction needs restoring, attempting restore');
       if (!account)
         account = await AssembledTransaction.getAccount(
           this.options,
