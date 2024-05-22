@@ -988,7 +988,10 @@ export class AssembledTransaction<T> {
       this.server
     );
     console.log("about to sign and send the restore contract transaction");
-    const sentTransaction = await restoreTx.signAndSend();
+    const sentTransaction = await restoreTx.signAndSend({
+      updateTimeout: false,
+      force: true,
+    });
     console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
       // todo make better error message
