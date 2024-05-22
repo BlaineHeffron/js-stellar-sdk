@@ -423,6 +423,7 @@ export class AssembledTransaction<T> {
       tx.server
     );
 
+    console.log(`account seq number before assembling transaction is ${account.sequenceNumber()}`)
     tx.raw = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
       networkPassphrase: options.networkPassphrase,
@@ -467,6 +468,7 @@ export class AssembledTransaction<T> {
     if (!wasmLedgerKey.entries.length || !wasmLedgerKey.entries[0]?.val) {
       throw new Error(`Could not obtain contract wasm from server`);
     }
+    console.log(`account seq number before assembling contract restore transaction is ${account.sequenceNumber()}`)
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -485,6 +487,7 @@ export class AssembledTransaction<T> {
     account: Account,
     fee: string
   ): AssembledTransaction<T> {
+    console.log(`account seq number before assembling footprint restore transaction is ${account.sequenceNumber()}`)
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
       fee,
@@ -522,6 +525,7 @@ export class AssembledTransaction<T> {
       );
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
+        console.log('incrementing seq number after restoring footprint');
         account.incrementSequenceNumber();
         const contract = new Contract(this.options.contractId);
         this.raw = new TransactionBuilder(account, {
@@ -555,6 +559,7 @@ export class AssembledTransaction<T> {
       const result = await this.restoreContract(account);
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
+        console.log('incrementing seq number after restoring contract footprint');
         account.incrementSequenceNumber();
         const contract = new Contract(this.options.contractId);
         this.raw = new TransactionBuilder(account, {
@@ -949,6 +954,7 @@ export class AssembledTransaction<T> {
     // first try restoring the contract
     const contractRestoreResult = await this.restoreContract(account);
     console.log(contractRestoreResult);
+    console.log('incrementing sequence number after contract restoral');
     account.incrementSequenceNumber();
     const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
