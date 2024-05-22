@@ -475,6 +475,7 @@ export class AssembledTransaction<T> {
       .setSorobanData(new SorobanDataBuilder().setReadWrite([contractLedgerKey, wasmLedgerKey.entries[0].key]).build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+    tx.simulate();
     return tx;
   }
 
@@ -492,6 +493,7 @@ export class AssembledTransaction<T> {
       .setSorobanData(sorobanData.build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+    tx.simulate();
     return tx;
   }
 
@@ -941,8 +943,7 @@ export class AssembledTransaction<T> {
     account: Account
   ): Promise<Api.GetTransactionResponse> {
     if(!this.options.signTransaction){
-      throw new Error("You must provide a signTransaction function, either when calling " +
-        "`signAndSend` or when initializing your Client");
+      throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
     const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
@@ -950,10 +951,8 @@ export class AssembledTransaction<T> {
       account,
       restorePreamble.minResourceFee
     );
-    restoreTx.built = restoreTx.raw!.build();
     console.log("about to sign and send the restore transaction");
     const sentTransaction = await restoreTx.signAndSend({
-      signTransaction: this.options.signTransaction,
       updateTimeout: false,
       force: true,
     });
@@ -974,6 +973,9 @@ export class AssembledTransaction<T> {
   async restoreContract(
     account: Account
   ): Promise<Api.GetTransactionResponse> {
+    if(!this.options.signTransaction){
+      throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
+    }
     const restoreTx = await AssembledTransaction.buildContractRestoreTransaction(
       { ...this.options },
       this.options.contractId,
@@ -981,13 +983,7 @@ export class AssembledTransaction<T> {
       this.server
     );
     console.log("about to sign and send the restore contract transaction");
-    // simulate to get fee
-    await restoreTx.simulate();
-    const sentTransaction = await restoreTx.signAndSend(
-      {
-        signTransaction: this.options.signTransaction
-      }
-    );
+    const sentTransaction = await restoreTx.signAndSend();
     console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
       // todo make better error message
