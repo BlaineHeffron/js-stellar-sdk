@@ -492,6 +492,7 @@ export class AssembledTransaction<T> {
     result: Api.SimulateHostFunctionResult;
     transactionData: xdr.SorobanTransactionData;
   } {
+    console.log("getting simulation data");
     if (this.simulationResult && this.simulationTransactionData) {
       return {
         result: this.simulationResult,
@@ -505,7 +506,7 @@ export class AssembledTransaction<T> {
       );
     }
     if (Api.isSimulationError(simulation)) {
-      console.log(simulation.error);
+      console.log(simulation);
       console.log(JSON.stringify(simulation.error));
       throw new Error(`Transaction simulation failed: "${simulation.error}"`);
     }
@@ -543,6 +544,7 @@ export class AssembledTransaction<T> {
   }
 
   get result(): T {
+    console.log('getting result');
     try {
       return this.options.parseResultXdr(this.simulationData.result.retval);
     } catch (e) {
@@ -800,6 +802,7 @@ export class AssembledTransaction<T> {
    * returns `false`, then you need to call `signAndSend` on this transaction.
    */
   get isReadCall(): boolean {
+    console.log("checking if read call");
     const authsCount = this.simulationData.result.auth.length;
     const writeLength = this.simulationData.transactionData
       .resources()
@@ -820,7 +823,9 @@ export class AssembledTransaction<T> {
       account, 
       restorePreamble.minResourceFee
     );
+    console.log("about to sign and send the restore transaction");
     const sentTransaction = await restoreTx.signAndSend({updateTimeout: false})
+    console.log("sent it");
     if(!sentTransaction.getTransactionResponse){
       //todo make better error message
       throw new AssembledTransaction.Errors.RestoreFailure(`Failure during restore. \n${JSON.stringify(sentTransaction)}`);
