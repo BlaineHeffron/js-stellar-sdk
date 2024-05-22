@@ -946,6 +946,7 @@ export class AssembledTransaction<T> {
       account,
       restorePreamble.minResourceFee
     );
+    restoreTx.built = restoreTx.raw!.build();
     console.log("about to sign and send the restore transaction");
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,

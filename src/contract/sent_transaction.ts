@@ -86,15 +86,19 @@ export class SentTransaction<T> {
   private send = async (updateTimeout: boolean = true): Promise<this> => {
     const timeoutInSeconds =
       this.assembled.options.timeoutInSeconds ?? DEFAULT_TIMEOUT;
-    if(updateTimeout) this.assembled.built = TransactionBuilder.cloneFrom(this.assembled.built!, {
-      fee: this.assembled.built!.fee,
-      timebounds: undefined,
-      sorobanData: new SorobanDataBuilder(
-        this.assembled.simulationData.transactionData.toXDR(),
-      ).build(),
-    })
-      .setTimeout(timeoutInSeconds)
-      .build();
+    console.log('sending');
+    if(updateTimeout) {
+      console.log("update timeout is true")
+      this.assembled.built = TransactionBuilder.cloneFrom(this.assembled.built!, {
+        fee: this.assembled.built!.fee,
+        timebounds: undefined,
+        sorobanData: new SorobanDataBuilder(
+          this.assembled.simulationData.transactionData.toXDR(),
+        ).build(),
+      })
+        .setTimeout(timeoutInSeconds)
+        .build();
+    }
 
     const signature = await this.signTransaction!(
       // `signAndSend` checks for `this.built` before calling `SentTransaction.init`
