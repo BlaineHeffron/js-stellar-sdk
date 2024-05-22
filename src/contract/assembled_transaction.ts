@@ -452,7 +452,6 @@ export class AssembledTransaction<T> {
     if (!wasmHashEntries.entries.length || !wasmHashEntries.entries[0]?.val) {
       throw new Error(`Could not obtain contract hash from server`);
     }
-    account.incrementSequenceNumber();
     const wasmHash = wasmHashEntries.entries[0].val
       .contractData()
       .val()
@@ -468,7 +467,6 @@ export class AssembledTransaction<T> {
     if (!wasmLedgerKey.entries.length || !wasmLedgerKey.entries[0]?.val) {
       throw new Error(`Could not obtain contract wasm from server`);
     }
-    account.incrementSequenceNumber();
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -991,6 +989,9 @@ export class AssembledTransaction<T> {
       this.server
     );
     console.log("about to sign and send the restore contract transaction");
+    console.log(`account sequence number is ${account.sequenceNumber}`);
+    const account2 = AssembledTransaction.getAccount(this.options, this.server);
+    console.log(`account2 sequence number is ${account2.sequenceNumber}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
       force: true,
