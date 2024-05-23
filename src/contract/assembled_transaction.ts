@@ -515,15 +515,11 @@ export class AssembledTransaction<T> {
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
       console.log('transaction needs restoring, attempting restore');
-      const {result} = await this.restoreFootprint(
+      const {result, account} = await this.restoreFootprint(
         this.simulation.restorePreamble,
       );
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
-        const account = await AssembledTransaction.getAccount(
-          this.options,
-          this.server
-        );
         const contract = new Contract(this.options.contractId);
         this.raw = new TransactionBuilder(account, {
           fee: this.options.fee ?? BASE_FEE,
@@ -546,7 +542,7 @@ export class AssembledTransaction<T> {
         `You need to restore some contract state before invoking this method. Automatic restore failed:\n${JSON.stringify(result)}`
       );
     }
-    if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
+    /*if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
       // contract expired needs restoration
       const {result} = await this.restoreContract();
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
@@ -576,7 +572,7 @@ export class AssembledTransaction<T> {
       throw new AssembledTransaction.Errors.RestoreFailure(
         `You need to restore some contract state before invoking this method. Automatic restore failed:\n${JSON.stringify(result)}`
       );
-    }
+    }*/
     if (Api.isSimulationSuccess(this.simulation)) {
       this.built = assembleTransaction(
         this.built,
@@ -946,8 +942,8 @@ export class AssembledTransaction<T> {
     }
     // first try restoring the contract
     const account = await AssembledTransaction.getAccount(this.options, this.server);
-    const { result: contractRestoreResult } = await this.restoreContract(account);
-    console.log(contractRestoreResult);
+    //const { result: contractRestoreResult } = await this.restoreContract(account);
+    //console.log(contractRestoreResult);
     const restoreTx = await AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
