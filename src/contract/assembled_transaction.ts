@@ -515,8 +515,10 @@ export class AssembledTransaction<T> {
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
       console.log('transaction needs restoring, attempting restore');
-      const {result, account} = await this.restoreFootprint(
+      const account = await AssembledTransaction.getAccount(this.options, this.server);
+      let result = await this.restoreFootprint(
         this.simulation.restorePreamble,
+        account
       );
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
@@ -936,12 +938,13 @@ export class AssembledTransaction<T> {
       minResourceFee: string;
       transactionData: SorobanDataBuilder;
     },
-  ): Promise<{result: Api.GetTransactionResponse, account: Account}> {
+    account: Account
+  ): Promise<Api.GetTransactionResponse> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
     // first try restoring the contract
-    const account = await AssembledTransaction.getAccount(this.options, this.server);
+    //const account = await AssembledTransaction.getAccount(this.options, this.server);
     //const { result: contractRestoreResult } = await this.restoreContract(account);
     //console.log(contractRestoreResult);
     const restoreTx = await AssembledTransaction.buildFootprintRestoreTransaction(
@@ -962,7 +965,7 @@ export class AssembledTransaction<T> {
         `Failure during restore. \n${JSON.stringify(sentTransaction)}`
       );
     }
-    return { result: sentTransaction.getTransactionResponse, account };
+    return sentTransaction.getTransactionResponse;
   }
 
   /**
