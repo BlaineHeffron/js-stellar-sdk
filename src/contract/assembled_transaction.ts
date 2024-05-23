@@ -952,7 +952,7 @@ export class AssembledTransaction<T> {
     );
     console.log(`about to sign and send the restore transaction with fee ${restorePreamble.minResourceFee}`);
     const sentTransaction = await restoreTx.signAndSend({
-      updateTimeout: true,
+      updateTimeout: false,
       force: true,
     });
     console.log("sent it");
@@ -983,7 +983,7 @@ export class AssembledTransaction<T> {
     console.log("about to sign and send the restore contract transaction");
     console.log(`account sequence number is ${account.sequenceNumber()}`);
     const sentTransaction = await restoreTx.signAndSend({
-      updateTimeout: true,
+      updateTimeout: false,
       force: true,
     });
     console.log("sent it");
