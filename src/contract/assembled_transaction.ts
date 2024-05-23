@@ -435,7 +435,7 @@ export class AssembledTransaction<T> {
 
     if (options.simulate) {
       const restore = options.restore ?? false;
-      await tx.simulate(restore, account);
+      await tx.simulate(restore);
     }
 
     return tx;
@@ -499,7 +499,7 @@ export class AssembledTransaction<T> {
     return tx;
   }
 
-  simulate = async (restore?: boolean, account?: Account): Promise<this> => {
+  simulate = async (restore?: boolean): Promise<this> => {
     if (!this.raw) {
       throw new Error(
         "Transaction has not yet been assembled; " +
@@ -514,19 +514,15 @@ export class AssembledTransaction<T> {
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
       console.log('transaction needs restoring, attempting restore');
-      if (!account)
-        account = await AssembledTransaction.getAccount(
-          this.options,
-          this.server
-        );
       const result = await this.restoreFootprint(
         this.simulation.restorePreamble,
-        account
       );
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
-        console.log('incrementing seq number after restoring footprint');
-        account.incrementSequenceNumber();
+        const account = await AssembledTransaction.getAccount(
+          this.options,
+          this.server
+        );
         const contract = new Contract(this.options.contractId);
         this.raw = new TransactionBuilder(account, {
           fee: this.options.fee ?? BASE_FEE,
@@ -551,16 +547,13 @@ export class AssembledTransaction<T> {
     }
     if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
       // contract expired needs restoration
-      if (!account)
-        account = await AssembledTransaction.getAccount(
+      const result = await this.restoreContract();
+      if (result.status === Api.GetTransactionStatus.SUCCESS) {
+        // need to rebuild the transaction with bumped account sequence number
+        const account = await AssembledTransaction.getAccount(
           this.options,
           this.server
         );
-      const result = await this.restoreContract(account);
-      if (result.status === Api.GetTransactionStatus.SUCCESS) {
-        // need to rebuild the transaction with bumped account sequence number
-        console.log('incrementing seq number after restoring contract footprint');
-        account.incrementSequenceNumber();
         const contract = new Contract(this.options.contractId);
         this.raw = new TransactionBuilder(account, {
           fee: this.options.fee ?? BASE_FEE,
@@ -946,16 +939,14 @@ export class AssembledTransaction<T> {
       minResourceFee: string;
       transactionData: SorobanDataBuilder;
     },
-    account: Account
   ): Promise<Api.GetTransactionResponse> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
     // first try restoring the contract
+    const account = await AssembledTransaction.getAccount(this.options, this.server);
     const contractRestoreResult = await this.restoreContract(account);
     console.log(contractRestoreResult);
-    console.log('incrementing sequence number after contract restoral');
-    account.incrementSequenceNumber();
     const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
@@ -982,12 +973,11 @@ export class AssembledTransaction<T> {
    * Creates a transaction to restore the footprint of the expired contract 
    * hash and/or wasm. Will await signature and then awaits the response.
    */
-  async restoreContract(
-    account: Account
-  ): Promise<Api.GetTransactionResponse> {
+  async restoreContract(account?: Account): Promise<Api.GetTransactionResponse> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
+    if(!account) account = await AssembledTransaction.getAccount(this.options, this.server);
     const restoreTx = await AssembledTransaction.buildContractRestoreTransaction(
       { ...this.options },
       this.options.contractId,
@@ -996,8 +986,6 @@ export class AssembledTransaction<T> {
     );
     console.log("about to sign and send the restore contract transaction");
     console.log(`account sequence number is ${account.sequenceNumber()}`);
-    const account2 = await AssembledTransaction.getAccount(this.options, this.server);
-    console.log(`account2 sequence number is ${account2.sequenceNumber()}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
       force: true,
