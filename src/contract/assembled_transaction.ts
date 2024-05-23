@@ -423,7 +423,6 @@ export class AssembledTransaction<T> {
       tx.server
     );
 
-    console.log(`account seq number before assembling transaction is ${account.sequenceNumber()}`)
     tx.raw = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
       networkPassphrase: options.networkPassphrase,
@@ -468,7 +467,6 @@ export class AssembledTransaction<T> {
     if (!wasmLedgerKey.entries.length || !wasmLedgerKey.entries[0]?.val) {
       throw new Error(`Could not obtain contract wasm from server`);
     }
-    console.log(`account seq number before assembling contract restore transaction is ${account.sequenceNumber()}`)
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -483,17 +481,16 @@ export class AssembledTransaction<T> {
 
   private static async buildFootprintRestoreTransaction<T>(
     options: AssembledTransactionOptions<T>,
-    sorobanData: SorobanDataBuilder,
+    sorobanData: SorobanDataBuilder | xdr.SorobanTransactionData,
     account: Account,
     fee: string
   ): Promise<AssembledTransaction<T>> {
-    console.log(`account seq number before assembling footprint restore transaction is ${account.sequenceNumber()}`)
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
       fee,
       networkPassphrase: options.networkPassphrase,
     })
-      .setSorobanData(sorobanData.build())
+      .setSorobanData(sorobanData instanceof SorobanDataBuilder ? sorobanData.build() : sorobanData)
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
     await tx.simulate(false);
@@ -507,16 +504,14 @@ export class AssembledTransaction<T> {
         "call `AssembledTransaction.build` first."
       );
     }
-    console.log("simulating");
 
     restore = restore ?? this.options.restore;
     this.built = this.raw.build();
     this.simulation = await this.server.simulateTransaction(this.built);
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
-      console.log('transaction needs restoring, attempting restore');
       const account = await AssembledTransaction.getAccount(this.options, this.server);
-      let result = await this.restoreFootprint(
+      const result = await this.restoreFootprint(
         this.simulation.restorePreamble,
         account
       );
@@ -544,37 +539,7 @@ export class AssembledTransaction<T> {
         `You need to restore some contract state before invoking this method. Automatic restore failed:\n${JSON.stringify(result)}`
       );
     }
-    /*if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
-      // contract expired needs restoration
-      const {result} = await this.restoreContract();
-      if (result.status === Api.GetTransactionStatus.SUCCESS) {
-        // need to rebuild the transaction with bumped account sequence number
-        const account = await AssembledTransaction.getAccount(
-          this.options,
-          this.server
-        );
-        const contract = new Contract(this.options.contractId);
-        this.raw = new TransactionBuilder(account, {
-          fee: this.options.fee ?? BASE_FEE,
-          networkPassphrase: this.options.networkPassphrase,
-        })
-          .addOperation(
-            contract.call(
-              this.options.method,
-              ...(this.options.args ?? [])
-            )
-          )
-          .setTimeout(
-            this.options.timeoutInSeconds ?? DEFAULT_TIMEOUT
-          );
-        // todo: might not need to resimulate, could just copy simulation result
-        await this.simulate();
-        return this;
-      }
-      throw new AssembledTransaction.Errors.RestoreFailure(
-        `You need to restore some contract state before invoking this method. Automatic restore failed:\n${JSON.stringify(result)}`
-      );
-    }*/
+
     if (Api.isSimulationSuccess(this.simulation)) {
       this.built = assembleTransaction(
         this.built,
@@ -589,7 +554,6 @@ export class AssembledTransaction<T> {
     result: Api.SimulateHostFunctionResult;
     transactionData: xdr.SorobanTransactionData;
   } {
-    console.log("getting simulation data");
     if (this.simulationResult && this.simulationTransactionData) {
       return {
         result: this.simulationResult,
@@ -603,16 +567,12 @@ export class AssembledTransaction<T> {
       );
     }
     if (Api.isSimulationError(simulation)) {
-      console.log(simulation);
-      console.log(JSON.stringify(simulation.error));
       throw new Error(
         `Transaction simulation failed: "${simulation.error}"`
       );
     }
 
     if (Api.isSimulationRestore(simulation)) {
-      console.log(simulation.restorePreamble);
-      console.log(JSON.stringify(simulation.restorePreamble));
       throw new AssembledTransaction.Errors.ExpiredState(
         `You need to restore some contract state before you can invoke this method. ${JSON.stringify(
           simulation,
@@ -643,7 +603,6 @@ export class AssembledTransaction<T> {
   }
 
   get result(): T {
-    console.log("getting result");
     try {
       return this.options.parseResultXdr(
         this.simulationData.result.retval
@@ -920,7 +879,6 @@ export class AssembledTransaction<T> {
    * returns `false`, then you need to call `signAndSend` on this transaction.
    */
   get isReadCall(): boolean {
-    console.log("checking if read call");
     const authsCount = this.simulationData.result.auth.length;
     const writeLength = this.simulationData.transactionData
       .resources()
@@ -944,21 +902,16 @@ export class AssembledTransaction<T> {
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
     // first try restoring the contract
-    //const account = await AssembledTransaction.getAccount(this.options, this.server);
-    //const { result: contractRestoreResult } = await this.restoreContract(account);
-    //console.log(contractRestoreResult);
     const restoreTx = await AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
       account,
       restorePreamble.minResourceFee
     );
-    console.log(`about to sign and send the restore transaction with fee ${restorePreamble.minResourceFee}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
       force: true,
     });
-    console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
       // todo make better error message
       throw new AssembledTransaction.Errors.RestoreFailure(
@@ -983,13 +936,10 @@ export class AssembledTransaction<T> {
       account,
       this.server
     );
-    console.log("about to sign and send the restore contract transaction");
-    console.log(`account sequence number is ${account.sequenceNumber()}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
       force: true,
     });
-    console.log("sent it");
     if (!sentTransaction.getTransactionResponse) {
       // todo make better error message
       throw new AssembledTransaction.Errors.RestoreFailure(
