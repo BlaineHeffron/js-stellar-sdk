@@ -481,12 +481,12 @@ export class AssembledTransaction<T> {
     return tx;
   }
 
-  private static buildFootprintRestoreTransaction<T>(
+  private static async buildFootprintRestoreTransaction<T>(
     options: AssembledTransactionOptions<T>,
     sorobanData: SorobanDataBuilder,
     account: Account,
     fee: string
-  ): AssembledTransaction<T> {
+  ): Promise<AssembledTransaction<T>> {
     console.log(`account seq number before assembling footprint restore transaction is ${account.sequenceNumber()}`)
     const tx = new AssembledTransaction(options);
     tx.raw = new TransactionBuilder(account, {
@@ -496,6 +496,7 @@ export class AssembledTransaction<T> {
       .setSorobanData(sorobanData.build())
       .addOperation(Operation.restoreFootprint({}))
       .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+    await tx.simulate(false);
     return tx;
   }
 
@@ -514,7 +515,7 @@ export class AssembledTransaction<T> {
 
     if (Api.isSimulationRestore(this.simulation) && restore) {
       console.log('transaction needs restoring, attempting restore');
-      const result = await this.restoreFootprint(
+      const {result} = await this.restoreFootprint(
         this.simulation.restorePreamble,
       );
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
@@ -547,7 +548,7 @@ export class AssembledTransaction<T> {
     }
     if (Api.isSimulationError(this.simulation) && restore && this.simulation.error.startsWith("HostError: Error(Storage, MissingValue)")) {
       // contract expired needs restoration
-      const result = await this.restoreContract();
+      const {result} = await this.restoreContract();
       if (result.status === Api.GetTransactionStatus.SUCCESS) {
         // need to rebuild the transaction with bumped account sequence number
         const account = await AssembledTransaction.getAccount(
@@ -939,21 +940,20 @@ export class AssembledTransaction<T> {
       minResourceFee: string;
       transactionData: SorobanDataBuilder;
     },
-  ): Promise<Api.GetTransactionResponse> {
+  ): Promise<{result: Api.GetTransactionResponse, account: Account}> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
     // first try restoring the contract
     const account = await AssembledTransaction.getAccount(this.options, this.server);
-    const contractRestoreResult = await this.restoreContract(account);
+    const { result: contractRestoreResult } = await this.restoreContract(account);
     console.log(contractRestoreResult);
-    const restoreTx = AssembledTransaction.buildFootprintRestoreTransaction(
+    const restoreTx = await AssembledTransaction.buildFootprintRestoreTransaction(
       { ...this.options },
       restorePreamble.transactionData,
       account,
       restorePreamble.minResourceFee
     );
-    restoreTx.built = restoreTx.raw!.build();
     console.log(`about to sign and send the restore transaction with fee ${restorePreamble.minResourceFee}`);
     const sentTransaction = await restoreTx.signAndSend({
       updateTimeout: false,
@@ -966,14 +966,14 @@ export class AssembledTransaction<T> {
         `Failure during restore. \n${JSON.stringify(sentTransaction)}`
       );
     }
-    return sentTransaction.getTransactionResponse;
+    return { result: sentTransaction.getTransactionResponse, account };
   }
 
   /**
    * Creates a transaction to restore the footprint of the expired contract 
    * hash and/or wasm. Will await signature and then awaits the response.
    */
-  async restoreContract(account?: Account): Promise<Api.GetTransactionResponse> {
+  async restoreContract(account?: Account): Promise<{result: Api.GetTransactionResponse, account: Account }> {
     if(!this.options.signTransaction){
       throw new Error("For automatic restore to work you must provide a signTransaction function when initializing your Client");
     }
@@ -997,7 +997,7 @@ export class AssembledTransaction<T> {
         `Failure during contract restore. \n${JSON.stringify(sentTransaction)}`
       );
     }
-    return sentTransaction.getTransactionResponse;
+    return { result: sentTransaction.getTransactionResponse, account };
   }
 
 }
