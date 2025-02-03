@@ -641,6 +641,8 @@ export class AssembledTransaction<T> {
       );
     }
 
+    console.log('simulation data:');
+    console.log(JSON.stringify(this.simulationData));
     const timeoutInSeconds =
       this.options.timeoutInSeconds ?? DEFAULT_TIMEOUT;
     this.built = TransactionBuilder.cloneFrom(this.built!, {
@@ -657,11 +659,15 @@ export class AssembledTransaction<T> {
         networkPassphrase: this.options.networkPassphrase,
       },
     );
+    console.log('signature')
+    console.log(JSON.stringify(signature));
 
     this.signed = TransactionBuilder.fromXDR(
       signature,
       this.options.networkPassphrase,
     ) as Tx;
+    console.log('signed')
+    console.log(JSON.stringify(this.signed))
   };
 
   /**
