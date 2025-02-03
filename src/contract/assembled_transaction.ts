@@ -717,6 +717,8 @@ export class AssembledTransaction<T> {
     if (this.options.address) signOpts.address = this.options.address;
     if (this.options.submit !== undefined) signOpts.submit = this.options.submit;
     if (this.options.submitUrl) signOpts.submitUrl = this.options.submitUrl;
+    console.log('signature')
+    console.log(JSON.stringify(signOpts))
 
     const { signedTxXdr: signature, error } = await signTransaction(
       this.built.toXDR(),
