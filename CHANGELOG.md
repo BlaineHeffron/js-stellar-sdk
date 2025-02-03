@@ -7,6 +7,283 @@ A breaking change will get clearly marked in this log.
 ## Unreleased
 
 
+## [v13.1.0](https://github.com/stellar/js-stellar-sdk/compare/v13.0.0...v13.1.0)
+
+### Added
+* Added `Horizon.Server.root` to obtain information from the Horizon root endpoint ([#1122](https://github.com/stellar/js-stellar-sdk/pull/1122/)).
+
+### Fixed
+* When using a friendbot that points to a Horizon instance that has ledger metadata disabled, you can no longer extract the account sequence from the response. Instead, we hit RPC directly ([#1107](https://github.com/stellar/js-stellar-sdk/pull/1107/)).
+* `rpc.Server.getEvents()` now correctly returns the `cursor` field at the top-level response ([#1124](https://github.com/stellar/js-stellar-sdk/pull/1124)).
+
+
+## [v13.0.0](https://github.com/stellar/js-stellar-sdk/compare/v12.3.0...v13.0.0)
+This is a direct re-tag of rc.2 with the only change being an upgrade to the `stellar-base` library to incorporate a patch release. Nonetheless, the entire changelog from the prior major version here is replicated for a comprehensive view on what's broken, added, and fixed.
+
+### Breaking Changes
+- We stopped supporting Node 18 explicitly a while ago, but now the Babelification of the codebase will transform to Node 18 instead of 16.
+
+#### TypeScript Bindings: the `contract` module.
+- `contract.AssembledTransaction#signAuthEntries` now takes an `address` instead of a `publicKey`. This brings the API more inline with its actual functionality: It can be used to sign all the auth entries for a particular _address_, whether that is the address of an account (public key) or a contract. ([#1044](https://github.com/stellar/js-stellar-sdk/pull/1044)).
+- The `ClientOptions.signTransaction` type has been updated to reflect the latest [SEP-43](https://stellar.org/protocol/sep-43#wallet-interface-format) protocol, which matches the latest major version of Freighter and other wallets. It now accepts `address`, `submit`, and `submitUrl` options, and it returns a promise containing the `signedTxXdr` and the `signerAddress`. It now also returns an `Error` type if an error occurs during signing.
+  * `basicNodeSigner` has been updated to reflect this new type.
+- `ClientOptions.signAuthEntry` type has been updated to reflect the [SEP-43](https://stellar.org/protocol/sep-43#wallet-interface-format) protocol, which returns a promise containing the `signerAddress` in addition to the `signAuthEntry` that was returned previously. It also can return an `Error` type.
+- `SentTransaction.init` and `new SentTransaction` now take _one_ (1) argument instead of _two_ (2). The first argument had previously been deprecated and ignored. To update:
+```diff
+-SentTransaction(nonsense, realStuff)
++SentTransaction(realStuff)
+-new SentTransaction(nonsense, realStuff)
++new SentTransaction(realStuff)
+```
+
+#### Server APIs: the `rpc` and `Horizon` modules.
+- Deprecated RPC APIs have been removed ([#1084](https://github.com/stellar/js-stellar-sdk/pull/1084)):
+  * `simulateTransaction`'s `cost` field is removed
+  * `rpc.Server.getEvents`'s `pagingToken` field is deprecated, use `cursor` instead
+- Deprecated Horizon APIs have been removed (deprecated since [v10.0.1](https://github.com/stellar/js-stellar-sdk/releases/tag/v10.0.1), []()):
+  * removed fields `transaction_count`, `base_fee`, and `base_reserve`
+  * removed fields `num_accounts` and `amount` from assets
+- The `SorobanRpc` import, previously deprecated, has been removed. You can import `rpc` instead:
+```diff
+-import { SorobanRpc } from '@stellar/stellar-sdk'
++import { rpc } from '@stellar/stellar-sdk'
+// alternatively, you can also import from the `rpc` entrypoint:
+import { Server } from '@stellar/stellar-sdk/rpc'
+```
+
+### Added
+
+#### TypeScript Bindings: the `contract` module.
+* `contract.Client` now has a static `deploy` method that can be used to deploy a contract instance from an existing uploaded/"installed" Wasm hash. The first arguments to this method are the arguments for the contract's `__constructor` method in accordance with [CAP-42](https://stellar.org/protocol/cap-42) ([#1086](https://github.com/stellar/js-stellar-sdk/pull/1086/)). For example, using the `increment` test contract as modified in https://github.com/stellar/soroban-test-examples/pull/2/files#diff-8734809100be3803c3ce38064730b4578074d7c2dc5fb7c05ca802b2248b18afR10-R45:
+```typescript
+const tx = await contract.Client.deploy(
+  { counter: 42 },
+  {
+    networkPassphrase,
+    rpcUrl,
+    wasmHash: uploadedWasmHash,
+    publicKey: someKeypair.publicKey(),
+    ...basicNodeSigner(someKeypair, networkPassphrase),
+  },
+);
+const { result: client } = await tx.signAndSend();
+const t = await client.get();
+expect(t.result, 42);
+```
+* `contract.AssembledTransaction#signAuthEntries` now allows you to override `authorizeEntry`. This can be used to streamline novel workflows using cross-contract auth. ([#1044](https://github.com/stellar/js-stellar-sdk/pull/1044)).
+
+#### Server modules: the `rpc`, `Horizon`, and `stellartoml` modules.
+* `Horizon.ServerApi` now has an `EffectType` exported so that you can compare and infer effect types directly ([#1099](https://github.com/stellar/js-stellar-sdk/pull/1099)).
+* `Horizon.ServerApi.Trade` type now has a `type_i` field for type inference ([#1099](https://github.com/stellar/js-stellar-sdk/pull/1099)).
+* All effects now expose their type as an exact string ([#947](https://github.com/stellar/js-stellar-sdk/pull/947)).
+* `stellartoml.Resolver.resolve` now has a `allowedRedirects` option to configure the number of allowed redirects to follow when resolving a stellar toml file.
+* `rpc.Server.getEvents` now returns a `cursor` field that matches `pagingToken` and `id`
+* `rpc.Server.getTransactions` now returns a `txHash` field
+* `rpc.Server` has two new methods:
+  - `pollTransaction` to retry transaction retrieval ([#1092]https://github.com/stellar/js-stellar-sdk/pull/1092), and
+  - `getSACBalance` to fetch the balance of a built-in Stellar Asset Contract token held by a contract ([#1046](https://github.com/stellar/js-stellar-sdk/pull/1046)), returning this schema:
+```typescript
+export interface BalanceResponse {
+  latestLedger: number;
+  /** present only on success, otherwise request malformed or no balance */
+  balanceEntry?: {
+    /** a 64-bit integer */
+    amount: string;
+    authorized: boolean;
+    clawback: boolean;
+
+    lastModifiedLedgerSeq?: number;
+    liveUntilLedgerSeq?: number;
+  };
+}
+```
+
+#### New bundles without dependencies
+- You can now build the browser bundle without various dependencies:
+  * Set `USE_AXIOS=false` to build without the `axios` dependency: this will build `stellar-sdk-no-axios.js` and `stellar-sdk-no-axios.min.js` in the `dist/` directory, or just run `yarn build:browser:no-axios` to generate these files.
+  * You can import Node packages without the `axios` dependency via `@stellar/stellar-sdk/no-axios`. For Node environments that don't support modern imports, use `@stellar/stellar-sdk/lib/no-axios/index`.
+  * Set `USE_EVENTSOURCE=false` to build without the `eventsource` dependency: this will build `stellar-sdk-no-eventsource.js` and `stellar-sdk-no-eventsource.min.js` in the `dist/` directory, or just run `yarn build:browser:no-eventsource` to generate these files.
+  * You can import Node packages without the `eventsource` dependency via `@stellar/stellar-sdk/no-eventsource`. For Node.js environments that don't support modern imports, use `@stellar/stellar-sdk/lib/no-eventsource/index`.
+  * To use a minimal build without both Axios and EventSource, use `stellar-sdk-minimal.js` for the browser build and import from `@stellar/stellar-sdk/minimal` for the Node package.
+
+### Fixed
+- `contract.AssembledTransaction#nonInvokerSigningBy` now correctly returns contract addresses, in instances of cross-contract auth, rather than throwing an error. `sign` will ignore these contract addresses, since auth happens via cross-contract call ([#1044](https://github.com/stellar/js-stellar-sdk/pull/1044)).
+- `buildInvocationTree` now correctly handles V2 contract creation and displays constructor args ([js-stellar-base#785](https://github.com/stellar/js-stellar-base/pull/785)).
+
+
+## [v13.0.0-rc.2](https://github.com/stellar/js-stellar-sdk/compare/v13.0.0-rc.1...v13.0.0-rc.2)
+
+### Breaking Changes
+- The `ClientOptions.signTransaction` type has been updated to reflect the latest [SEP-43](https://stellar.org/protocol/sep-43#wallet-interface-format) protocol, which matches the latest major version of Freighter and other wallets. It now accepts `address`, `submit`, and `submitUrl` options, and it returns a promise containing the `signedTxXdr` and the `signerAddress`. It now also returns an `Error` type if an error occurs during signing.
+  * `basicNodeSigner` has been updated to reflect the new type.
+- `ClientOptions.signAuthEntry` type has also been updated to reflect the [SEP-43](https://stellar.org/protocol/sep-43#wallet-interface-format) protocol, which also returns a promise containing the `signerAddress` in addition to the `signAuthEntry` that was returned previously. It also can return an `Error` type.
+
+### Added
+* `contract.Client` now has a static `deploy` method that can be used to deploy a contract instance from an existing uploaded/"installed" Wasm hash. The first arguments to this method are the arguments for the contract's `__constructor` method in accordance with CAP-42 ([#1086](https://github.com/stellar/js-stellar-sdk/pull/1086/)).
+
+For example, using the `increment` test contract as modified in https://github.com/stellar/soroban-test-examples/pull/2/files#diff-8734809100be3803c3ce38064730b4578074d7c2dc5fb7c05ca802b2248b18afR10-R45:
+```typescript
+  const tx = await contract.Client.deploy(
+    { counter: 42 },
+    {
+      networkPassphrase,
+      rpcUrl,
+      wasmHash: uploadedWasmHash,
+      publicKey: someKeypair.publicKey(),
+      ...basicNodeSigner(someKeypair, networkPassphrase),
+    },
+  );
+  const { result: client } = await tx.signAndSend();
+  const t = await client.get();
+  expect(t.result, 42);
+```
+* `Horizon.ServerApi` now has an `EffectType` exported so that you can compare and infer effect types directly ([#1099](https://github.com/stellar/js-stellar-sdk/pull/1099)).
+* `Horizon.ServerApi.Trade` type now has a `type_i` field for type inference.
+* All effects now expose their type as an exact string ([#947](https://github.com/stellar/js-stellar-sdk/pull/947)).
+* `stellartoml-Resolver.resolve` now has a `allowedRedirects` option to configure the number of allowed redirects to follow when resolving a stellar toml file.
+
+
+## [v13.0.0-rc.1](https://github.com/stellar/js-stellar-sdk/compare/v13.0.0-beta.1...v13.0.0-rc.1)
+
+### Breaking Changes
+- Deprecated RPC APIs have been removed ([#1084](https://github.com/stellar/js-stellar-sdk/pull/1084)):
+  * `simulateTransaction`'s `cost` field is removed
+  * `getEvents` returns a `cursor` field that matches `pagingToken` and `id`
+  * `getTransactions` returns a `txHash` field
+- Horizon Server API types: removed fields `transaction_count`, `base_fee`, and `base_reserve` (deprecated since [v10.0.1](https://github.com/stellar/js-stellar-sdk/releases/tag/v10.0.1))
+- `SentTransaction.init` and `new SentTransaction` now take _one_ (1) argument instead of _two_ (2). The first argument had previously been deprecated and ignored. To update:
+  ```diff
+  -SentTransaction(nonsense, realStuff)
+  +SentTransaction(realStuff)
+  -new SentTransaction(nonsense, realStuff)
+  +new SentTransaction(realStuff)
+  ```
+- `SorobanRpc` import, previously deprecated, has been removed. You can import `rpc` instead:
+  ```diff
+  -import { SorobanRpc } from '@stellar/stellar-sdk'
+  +import { rpc } from '@stellar/stellar-sdk'
+  ```
+
+  As an alternative, you can also import from the `rpc` entrypoint:
+
+  ```ts
+  import { Server } from '@stellar/stellar-sdk/rpc'
+  ```
+
+
+### Added
+- `rpc.Server` now has a `pollTransaction` method to retry transaction retrieval ([#1092]https://github.com/stellar/js-stellar-sdk/pull/1092).
+
+
+## [v13.0.0-beta.1](https://github.com/stellar/js-stellar-sdk/compare/v12.3.0...v13.0.0-beta.1)
+
+### Breaking Changes
+- `contract.AssembledTransaction#signAuthEntries` now takes an `address` instead of a `publicKey`. This brings the API more inline with its actual functionality: It can be used to sign all the auth entries for a particular _address_, whether that is the address of an account (public key) or a contract. ([#1044](https://github.com/stellar/js-stellar-sdk/pull/1044)).
+- The Node.js code will now Babelify to Node 18 instead of Node 16, but we stopped supporting Node 16 long ago so this shouldn't be a breaking change.
+
+### Added
+- You can now build the browser bundle without various dependencies:
+  * Set `USE_AXIOS=false` to build without the `axios` dependency: this will build `stellar-sdk-no-axios.js` and `stellar-sdk-no-axios.min.js` in the `dist/` directory, or just run `yarn build:browser:no-axios` to generate these files.
+  * You can import Node packages without the `axios` dependency via `@stellar/stellar-sdk/no-axios`. For Node environments that don't support modern imports, use `@stellar/stellar-sdk/lib/no-axios/index`.
+  * Set `USE_EVENTSOURCE=false` to build without the `eventsource` dependency: this will build `stellar-sdk-no-eventsource.js` and `stellar-sdk-no-eventsource.min.js` in the `dist/` directory, or just run `yarn build:browser:no-eventsource` to generate these files.
+  * You can import Node packages without the `eventsource` dependency via `@stellar/stellar-sdk/no-eventsource`. For Node.js environments that don't support modern imports, use `@stellar/stellar-sdk/lib/no-eventsource/index`.
+  * To use a minimal build without both Axios and EventSource, use `stellar-sdk-minimal.js` for the browser build and import from `@stellar/stellar-sdk/minimal` for the Node package.
+- `contract.AssembledTransaction#signAuthEntries` now allows you to override `authorizeEntry`. This can be used to streamline novel workflows using cross-contract auth. (#1044)
+- `rpc.Server` now has a `getSACBalance` helper which lets you fetch the balance of a built-in Stellar Asset Contract token held by a contract ([#1046](https://github.com/stellar/js-stellar-sdk/pull/1046)):
+```typescript
+export interface BalanceResponse {
+  latestLedger: number;
+  /** present only on success, otherwise request malformed or no balance */
+  balanceEntry?: {
+    /** a 64-bit integer */
+    amount: string;
+    authorized: boolean;
+    clawback: boolean;
+
+    lastModifiedLedgerSeq?: number;
+    liveUntilLedgerSeq?: number;
+  };
+}
+```
+
+### Fixed
+- `contract.AssembledTransaction#nonInvokerSigningBy` now correctly returns contract addresses, in instances of cross-contract auth, rather than throwing an error. `sign` will ignore these contract addresses, since auth happens via cross-contract call ([#1044](https://github.com/stellar/js-stellar-sdk/pull/1044)).
+
+
+## [v12.3.0](https://github.com/stellar/js-stellar-sdk/compare/v12.2.0...v12.3.0)
+
+### Added
+- `rpc.Server` now has a `getTransactions`, which has the same response schema as `getTransactions` except with bundles of transactions ([#1037](https://github.com/stellar/js-stellar-sdk/pull/1037)).
+- `rpc.Server` now has a `getVersionInfo` method which reports version information of the RPC instance it is connected to ([#1028](https://github.com/stellar/js-stellar-sdk/issues/1028)):
+
+```typescript
+export interface GetVersionInfoResponse {
+  version: string;
+  commit_hash: string;
+  build_time_stamp: string;
+  captive_core_version: string;
+  protocol_version: number;
+}
+```
+
+### Fixed
+- Lower authorization entry's default signature expiration to ~8min for security reasons ([#1023](https://github.com/stellar/js-stellar-sdk/pull/1023)).
+- Remove `statusText` error check to broaden compatibility ([#1001](https://github.com/stellar/js-stellar-sdk/pull/1001)).
+- Upgraded `stellar-base` which includes various fixes ([release notes](https://github.com/stellar/js-stellar-base/releases/tag/v12.1.1), [#1045](https://github.com/stellar/js-stellar-sdk/pull/1045)).
+
+
+## [v12.2.0](https://github.com/stellar/js-stellar-sdk/compare/v12.1.0...v12.2.0)
+
+### Fixed
+- `@stellar/stellar-base` and its underlying dependency `@stellar/js-xdr` have been upgraded to their latest versions; reference their release notes ([v12.1.0](https://github.com/stellar/js-stellar-base/releases/tag/v12.1.0) and [v3.1.2](https://github.com/stellar/js-xdr/releases/tag/v3.1.2), respectively) for details ([#1013](https://github.com/stellar/js-stellar-sdk/pull/1013)).
+
+### Added
+- You can now pass custom headers to both `rpc.Server` and `Horizon.Server` ([#1013](https://github.com/stellar/js-stellar-sdk/pull/1013)):
+```typescript
+import { Server } from "@stellar/stellar-sdk/rpc";
+
+const s = new Server("<some URL>", { headers: { "X-Custom-Header": "hello" }})
+```
+- `Horizon.Server` now supports the new `POST /transactions_async` endpoint via the `submitAsyncTransaction` method ([#989](https://github.com/stellar/js-stellar-sdk/pull/989)). Its purpose is to provide an immediate response to the submission rather than waiting for Horizon to determine its status. The response schema is as follows:
+```typescript
+interface SubmitAsyncTransactionResponse {
+  // the submitted transaction hash
+  hash: string;
+  // one of "PENDING", "DUPLICATE", "TRY_AGAIN_LATER", or "ERROR"
+  tx_status: string;
+  // a base64-encoded xdr.TransactionResult iff `tx_status` is "ERROR"
+  error_result_xdr: string;
+}
+```
+- `rpc.Server` now has a `getFeeStats` method which retrieves fee statistics for a previous chunk of ledgers to provide users with a way to provide informed decisions about getting their transactions included in the following ledgers ([#998](https://github.com/stellar/js-stellar-sdk/issues/998)):
+```typescript
+export interface GetFeeStatsResponse {
+  sorobanInclusionFee: FeeDistribution;
+  inclusionFee: FeeDistribution;
+  latestLedger: number; // uint32
+}
+
+interface FeeDistribution {
+  max: string;  // uint64
+  min: string;  // uint64
+  mode: string; // uint64
+  p10: string;  // uint64
+  p20: string;  // uint64
+  p30: string;  // uint64
+  p40: string;  // uint64
+  p50: string;  // uint64
+  p60: string;  // uint64
+  p70: string;  // uint64
+  p80: string;  // uint64
+  p90: string;  // uint64
+  p95: string;  // uint64
+  p99: string;  // uint64
+  transactionCount: string; // uint32
+  ledgerCount: number;      // uint32
+}
+```
+
+
 ## [v12.1.0](https://github.com/stellar/js-stellar-sdk/compare/v12.0.1...v12.1.0)
 
 ### Added
@@ -31,7 +308,7 @@ A breaking change will get clearly marked in this log.
 
 ### Added
 - `rpc.server.simulateTransaction` now supports an optional `stateChanges?: LedgerEntryChange[]` field ([#963](https://github.com/stellar/js-stellar-sdk/pull/963)):
-  * If `Before` is omitted, it constitutes a creation, if `After` is omitted, it constitutes a deletions, note that `Before` and `After` cannot be be omitted at the same time. Each item follows this schema:
+  * If `Before` is omitted, it constitutes a creation, if `After` is omitted, it constitutes a deletions, note that `Before` and `After` cannot be omitted at the same time. Each item follows this schema:
 
 ```typescript
 interface LedgerEntryChange {
@@ -81,7 +358,7 @@ import {
 +import { Spec } from '@stellar/stellar-sdk/contract'
 ```
 
-- Previously, `AssembledTransaction.signAndSend()` would return a `SentTransaction` even if the transaction never finalized. That is, if it successfully sent the transaction to the network, but the transaction was still `status: 'PENDING'`, then it would `console.error` an error message, but return the indeterminate transaction anyhow. **It now throws** a `SentTransaction.Errors.TransactionStillPending` error with that error message instead ([#962](https://github.com/stellar/js-stellar-sdk/pull/962)).
+- Previously, `AssembledTransaction.signAndSend()` would return a `SentTransaction` even if the transaction was never finalized. That is, if it successfully sent the transaction to the network, but the transaction was still `status: 'PENDING'`, then it would `console.error` an error message, but return the indeterminate transaction anyhow. **It now throws** a `SentTransaction.Errors.TransactionStillPending` error with that error message instead ([#962](https://github.com/stellar/js-stellar-sdk/pull/962)).
 
 ### Deprecated
 
@@ -465,7 +742,7 @@ Refer to the release notes for the betas (e.g. [v9.0.0-beta.0](https://github.co
 
 ### Updates
 
-- Updates the following SEP-10 utility functions to be compilant with the protocols ([#709](https://github.com/stellar/js-stellar-sdk/pull/709/), [stellar-protocol/#1036](https://github.com/stellar/stellar-protocol/pull/1036))
+- Updates the following SEP-10 utility functions to be compliant with the protocols ([#709](https://github.com/stellar/js-stellar-sdk/pull/709/), [stellar-protocol/#1036](https://github.com/stellar/stellar-protocol/pull/1036))
     - Updated `utils.buildChallengeTx()` to accept muxed accounts (`M...`) for client account IDs
     - Updated `utils.buildChallengeTx()` to accept a `memo` parameter to attach to the challenge transaction
     - Updated `utils.readChallengeTx()` to provide a `memo` property in the returned object
@@ -785,7 +1062,7 @@ The following functions were renamed:
 - `xdr.OperationType.setOption()` -> `xdr.OperationType.setOptions()`
 - `xdr.OperationType.manageDatum()` -> `xdr.OperationType.manageData()`
 
-The following enum values were rename in `OperationType`:
+The following enum values were renamed in `OperationType`:
 
 - `setOption` -> `setOptions`
 - `manageDatum` -> `manageData`

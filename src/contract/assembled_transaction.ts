@@ -2,13 +2,13 @@
 /* eslint max-classes-per-file: 0 */
 import {
   Account,
+  Address,
   BASE_FEE,
   Contract,
   Operation,
   SorobanDataBuilder,
-  StrKey,
   TransactionBuilder,
-  authorizeEntry,
+  authorizeEntry as stellarBaseAuthorizeEntry,
   xdr,
 } from "@stellar/stellar-base";
 import type {
@@ -16,24 +16,24 @@ import type {
   ClientOptions,
   MethodOptions,
   Tx,
+  WalletError,
   XDR_BASE64,
 } from "./types";
-import { Server } from "../rpc/server";
+import { Server } from "../rpc";
 import { Api } from "../rpc/api";
 import { assembleTransaction } from "../rpc/transaction";
 import type { Client } from "./client";
 import { Err } from "./rust_result";
 import {
-  DEFAULT_TIMEOUT,
   contractErrorPattern,
   implementsToString,
   getAccount
 } from "./utils";
+import { DEFAULT_TIMEOUT } from "./types";
 import { SentTransaction } from "./sent_transaction";
 import { Spec } from "./spec";
 
-export const NULL_ACCOUNT =
-  "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+/** @module contract */
 
 /**
  * The main workhorse of {@link Client}. This class is used to wrap a
@@ -50,7 +50,7 @@ export const NULL_ACCOUNT =
  * Let's look at examples of how to use `AssembledTransaction` for a variety of
  * use-cases:
  *
- * # 1. Simple read call
+ * #### 1. Simple read call
  *
  * Since these only require simulation, you can get the `result` of the call
  * right after constructing your `AssembledTransaction`:
@@ -83,7 +83,7 @@ export const NULL_ACCOUNT =
  * })
  * ```
  *
- * # 2. Simple write call
+ * #### 2. Simple write call
  *
  * For write calls that will be simulated and then sent to the network without
  * further manipulation, only one more step is needed:
@@ -117,7 +117,7 @@ export const NULL_ACCOUNT =
  * const { result } = await tx.signAndSend()
  * ```
  *
- * # 3. More fine-grained control over transaction construction
+ * #### 3. More fine-grained control over transaction construction
  *
  * If you need more control over the transaction before simulating it, you can
  * set various {@link MethodOptions} when constructing your
@@ -150,7 +150,7 @@ export const NULL_ACCOUNT =
  * If you need to inspect the simulation later, you can access it with
  * `tx.simulation`.
  *
- * # 4. Multi-auth workflows
+ * #### 4. Multi-auth workflows
  *
  * Soroban, and Stellar in general, allows multiple parties to sign a
  * transaction.
@@ -237,6 +237,8 @@ export const NULL_ACCOUNT =
  * To see an even more complicated example, where Alice swaps with Bob but the
  * transaction is invoked by yet another party, check out
  * [test-swap.js](../../test/e2e/src/test-swap.js).
+ *
+ * @memberof module:contract
  */
 export class AssembledTransaction<T> {
   /**
@@ -322,6 +324,11 @@ export class AssembledTransaction<T> {
     NoSigner: class NoSignerError extends Error { },
     NotYetSimulated: class NotYetSimulatedError extends Error { },
     FakeAccount: class FakeAccountError extends Error { },
+    SimulationFailed: class SimulationFailedError extends Error { },
+    InternalWalletError: class InternalWalletError extends Error { },
+    ExternalServiceError: class ExternalServiceError extends Error { },
+    InvalidClientRequest: class InvalidClientRequestError extends Error { },
+    UserRejected: class UserRejectedError extends Error { },
   };
 
   /**
@@ -404,7 +411,7 @@ export class AssembledTransaction<T> {
     }
     const method = invokeContractArgs.functionName().toString('utf-8');
     const txn = new AssembledTransaction(
-      { ...options, 
+      { ...options,
         method,
         parseResultXdr: (result: xdr.ScVal) =>
           spec.funcResToNative(method, result),
@@ -412,6 +419,26 @@ export class AssembledTransaction<T> {
      );
     txn.built = built;
     return txn;
+  }
+
+  private handleWalletError(error?: WalletError): void {
+    if (!error) return;
+
+    const { message, code } = error;
+    const fullMessage = `${message}${error.ext ? ` (${  error.ext.join(', ')  })` : ''}`;
+
+    switch (code) {
+      case -1:
+        throw new AssembledTransaction.Errors.InternalWalletError(fullMessage);
+      case -2:
+        throw new AssembledTransaction.Errors.ExternalServiceError(fullMessage);
+      case -3:
+        throw new AssembledTransaction.Errors.InvalidClientRequest(fullMessage);
+      case -4:
+        throw new AssembledTransaction.Errors.UserRejected(fullMessage);
+      default:
+        throw new Error(`Unhandled error: ${fullMessage}`);
+    }
   }
 
   private constructor(public options: AssembledTransactionOptions<T>) {
@@ -422,8 +449,8 @@ export class AssembledTransaction<T> {
   }
 
   /**
-   * Construct a new AssembledTransaction. This is the only way to create a new
-   * AssembledTransaction; the main constructor is private.
+   * Construct a new AssembledTransaction. This is the main way to create a new
+   * AssembledTransaction; the constructor is private.
    *
    * This is an asynchronous constructor for two reasons:
    *
@@ -434,28 +461,54 @@ export class AssembledTransaction<T> {
    * If you don't want to simulate the transaction, you can set `simulate` to
    * `false` in the options.
    *
-   *     const tx = await AssembledTransaction.build({
-   *       ...,
-   *       simulate: false,
-   *     })
+   * If you need to create an operation other than `invokeHostFunction`, you
+   * can use {@link AssembledTransaction.buildWithOp} instead.
+   *
+   * @example
+   * const tx = await AssembledTransaction.build({
+   *   ...,
+   *   simulate: false,
+   * })
    */
-  static async build<T>(
-    options: AssembledTransactionOptions<T>,
+  static build<T>(
+    options: AssembledTransactionOptions<T>
+  ): Promise<AssembledTransaction<T>> {
+    const contract = new Contract(options.contractId);
+    return AssembledTransaction.buildWithOp(
+      contract.call(options.method, ...(options.args ?? [])),
+      options
+    );
+  }
+
+  /**
+   * Construct a new AssembledTransaction, specifying an Operation other than
+   * `invokeHostFunction` (the default used by {@link AssembledTransaction.build}).
+   *
+   * Note: `AssembledTransaction` currently assumes these operations can be
+   * simulated. This is not true for classic operations; only for those used by
+   * Soroban Smart Contracts like `invokeHostFunction` and `createCustomContract`.
+   *
+   * @example
+   * const tx = await AssembledTransaction.buildWithOp(
+   *   Operation.createCustomContract({ ... });
+   *   {
+   *     ...,
+   *     simulate: false,
+   *   }
+   * )
+   */
+  static async buildWithOp<T>(
+    operation: xdr.Operation,
+    options: AssembledTransactionOptions<T>
   ): Promise<AssembledTransaction<T>> {
     const tx = new AssembledTransaction(options);
-    const contract = new Contract(options.contractId);
-
-    const account = await getAccount(
-      options,
-      tx.server
-    );
-
+    const account = await getAccount(options, tx.server);
     tx.raw = new TransactionBuilder(account, {
       fee: options.fee ?? BASE_FEE,
       networkPassphrase: options.networkPassphrase,
     })
-      .addOperation(contract.call(options.method, ...(options.args ?? [])))
-      .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT);
+      .setTimeout(options.timeoutInSeconds ?? DEFAULT_TIMEOUT)
+      .addOperation(operation);
 
     if (options.simulate) await tx.simulate();
 
@@ -554,13 +607,15 @@ export class AssembledTransaction<T> {
       );
     }
     if (Api.isSimulationError(simulation)) {
-      throw new Error(`Transaction simulation failed: "${simulation.error}"`);
+      throw new AssembledTransaction.Errors.SimulationFailed(
+        `Transaction simulation failed: "${simulation.error}"`
+      );
     }
 
     if (Api.isSimulationRestore(simulation)) {
       throw new AssembledTransaction.Errors.ExpiredState(
         `You need to restore some contract state before you can invoke this method.\n` +
-        'You can set `restore` to true in the method options in order to ' + 
+        'You can set `restore` to true in the method options in order to ' +
         'automatically restore the contract state when needed.'
       );
     }
@@ -600,7 +655,7 @@ export class AssembledTransaction<T> {
   }
 
   /**
-   * Sign the transaction with the signTransaction function included previously. 
+   * Sign the transaction with the signTransaction function included previously.
    * If you did not previously include one, you need to include one now.
    */
   sign = async ({
@@ -634,9 +689,11 @@ export class AssembledTransaction<T> {
       );
     }
 
-    if (this.needsNonInvokerSigningBy().length) {
+    // filter out contracts, as these are dealt with via cross contract calls
+    const sigsNeeded = this.needsNonInvokerSigningBy().filter(id => !id.startsWith('C'));
+    if (sigsNeeded.length) {
       throw new AssembledTransaction.Errors.NeedsMoreSignatures(
-        "Transaction requires more signatures. " +
+        `Transaction requires signatures from ${sigsNeeded}. ` +
         "See `needsNonInvokerSigningBy` for details.",
       );
     }
@@ -653,14 +710,22 @@ export class AssembledTransaction<T> {
       .setTimeout(timeoutInSeconds)
       .build();
 
-    const signature = await signTransaction(
+    const signOpts: Parameters<NonNullable<ClientOptions['signTransaction']>>[1] = {
+      networkPassphrase: this.options.networkPassphrase,
+    };
+  
+    if (this.options.address) signOpts.address = this.options.address;
+    if (this.options.submit !== undefined) signOpts.submit = this.options.submit;
+    if (this.options.submitUrl) signOpts.submitUrl = this.options.submitUrl;
+
+    const { signedTxXdr: signature, error } = await signTransaction(
       this.built.toXDR(),
-      {
-        networkPassphrase: this.options.networkPassphrase,
-      },
+      signOpts,
     );
     console.log('signature')
     console.log(JSON.stringify(signature));
+
+    this.handleWalletError(error);
 
     this.signed = TransactionBuilder.fromXDR(
       signature,
@@ -678,14 +743,14 @@ export class AssembledTransaction<T> {
     if(!this.signed){
       throw new Error("The transaction has not yet been signed. Run `sign` first, or use `signAndSend` instead.");
     }
-    const sent = await SentTransaction.init(undefined, this);
+    const sent = await SentTransaction.init(this);
     return sent;
   }
 
   /**
-   * Sign the transaction with the `signTransaction` function included previously. 
-   * If you did not previously include one, you need to include one now. 
-   * After signing, this method will send the transaction to the network and 
+   * Sign the transaction with the `signTransaction` function included previously.
+   * If you did not previously include one, you need to include one now.
+   * After signing, this method will send the transaction to the network and
    * return a `SentTransaction` that keeps track * of all the attempts to fetch the transaction.
    */
   signAndSend = async ({
@@ -702,22 +767,22 @@ export class AssembledTransaction<T> {
     signTransaction?: ClientOptions["signTransaction"];
   } = {}): Promise<SentTransaction<T>> => {
     if(!this.signed){
-      await this.sign({ force, signTransaction });
+      // Store the original submit option
+      const originalSubmit = this.options.submit;
+
+      // Temporarily disable submission in signTransaction to prevent double submission
+      if (this.options.submit) {
+        this.options.submit = false;
+      }
+
+      try {
+        await this.sign({ force, signTransaction });
+      } finally {
+        // Restore the original submit option
+        this.options.submit = originalSubmit;
+      }
     }
     return this.send();
-  };
-
-  private getStorageExpiration = async () => {
-    const entryRes = await this.server.getLedgerEntries(
-      new Contract(this.options.contractId).getFootprint(),
-    );
-    if (
-      !entryRes.entries ||
-      !entryRes.entries.length ||
-      !entryRes.entries[0].liveUntilLedgerSeq
-    )
-      throw new Error("failed to get ledger entry");
-    return entryRes.entries[0].liveUntilLedgerSeq;
   };
 
   /**
@@ -777,9 +842,9 @@ export class AssembledTransaction<T> {
                 "scvVoid"),
           )
           .map((entry) =>
-            StrKey.encodeEd25519PublicKey(
-              entry.credentials().address().address().accountId().ed25519(),
-            ),
+            Address.fromScAddress(
+              entry.credentials().address().address(),
+            ).toString(),
           ),
       ),
     ];
@@ -802,48 +867,56 @@ export class AssembledTransaction<T> {
    * currently supported!
    */
   signAuthEntries = async ({
-    expiration = this.getStorageExpiration(),
+    expiration = (async () =>
+      (await this.server.getLatestLedger()).sequence + 100)(),
     signAuthEntry = this.options.signAuthEntry,
-    publicKey = this.options.publicKey,
+    address = this.options.publicKey,
+    authorizeEntry = stellarBaseAuthorizeEntry,
   }: {
     /**
      * When to set each auth entry to expire. Could be any number of blocks in
      * the future. Can be supplied as a promise or a raw number. Default:
-     * contract's current `persistent` storage expiration date/ledger
-     * number/block.
+     * about 8.3 minutes from now.
      */
     expiration?: number | Promise<number>;
     /**
      * Sign all auth entries for this account. Default: the account that
      * constructed the transaction
      */
-    publicKey?: string;
+    address?: string;
     /**
-     * You must provide this here if you did not provide one before. Default:
-     * the `signAuthEntry` function from the `Client` options. Must
-     * sign things as the given `publicKey`.
+     * You must provide this here if you did not provide one before and you are not passing `authorizeEntry`. Default: the `signAuthEntry` function from the `Client` options. Must sign things as the given `publicKey`.
      */
     signAuthEntry?: ClientOptions["signAuthEntry"];
+
+    /**
+     * If you have a pro use-case and need to override the default `authorizeEntry` function, rather than using the one in @stellar/stellar-base, you can do that! Your function needs to take at least the first argument, `entry: xdr.SorobanAuthorizationEntry`, and return a `Promise<xdr.SorobanAuthorizationEntry>`.
+     *
+     * Note that you if you pass this, then `signAuthEntry` will be ignored.
+     */
+    authorizeEntry?: typeof stellarBaseAuthorizeEntry;
   } = {}): Promise<void> => {
     if (!this.built)
       throw new Error("Transaction has not yet been assembled or simulated");
-    const needsNonInvokerSigningBy = this.needsNonInvokerSigningBy();
 
-    if (!needsNonInvokerSigningBy) {
-      throw new AssembledTransaction.Errors.NoUnsignedNonInvokerAuthEntries(
-        "No unsigned non-invoker auth entries; maybe you already signed?",
-      );
-    }
-    if (needsNonInvokerSigningBy.indexOf(publicKey ?? "") === -1) {
-      throw new AssembledTransaction.Errors.NoSignatureNeeded(
-        `No auth entries for public key "${publicKey}"`,
-      );
-    }
-    if (!signAuthEntry) {
-      throw new AssembledTransaction.Errors.NoSigner(
-        "You must provide `signAuthEntry` when calling `signAuthEntries`, " +
-        "or when constructing the `Client` or `AssembledTransaction`",
-      );
+    // Likely if we're using a custom authorizeEntry then we know better than the `needsNonInvokerSigningBy` logic.
+    if (authorizeEntry === stellarBaseAuthorizeEntry) {
+      const needsNonInvokerSigningBy = this.needsNonInvokerSigningBy();
+      if (needsNonInvokerSigningBy.length === 0) {
+        throw new AssembledTransaction.Errors.NoUnsignedNonInvokerAuthEntries(
+          "No unsigned non-invoker auth entries; maybe you already signed?",
+        );
+      }
+      if (needsNonInvokerSigningBy.indexOf(address ?? "") === -1) {
+        throw new AssembledTransaction.Errors.NoSignatureNeeded(
+          `No auth entries for public key "${address}"`,
+        );
+      }
+      if (!signAuthEntry) {
+        throw new AssembledTransaction.Errors.NoSigner(
+          "You must provide `signAuthEntry` or a custom `authorizeEntry`"
+        );
+      }
     }
 
     const rawInvokeHostFunctionOp = this.built
@@ -853,8 +926,10 @@ export class AssembledTransaction<T> {
 
     // eslint-disable-next-line no-restricted-syntax
     for (const [i, entry] of authEntries.entries()) {
+      // workaround for https://github.com/stellar/js-stellar-sdk/issues/1070
+      const credentials = xdr.SorobanCredentials.fromXDR(entry.credentials().toXDR())
       if (
-        entry.credentials().switch() !==
+        credentials.switch() !==
         xdr.SorobanCredentialsType.sorobanCredentialsAddress()
       ) {
         // if the invoker/source account, then the entry doesn't need explicit
@@ -862,19 +937,26 @@ export class AssembledTransaction<T> {
         // account, so only check for sorobanCredentialsAddress
         continue; // eslint-disable-line no-continue
       }
-      const pk = StrKey.encodeEd25519PublicKey(
-        entry.credentials().address().address().accountId().ed25519(),
-      );
+      const authEntryAddress = Address.fromScAddress(
+        credentials.address().address(),
+      ).toString();
 
       // this auth entry needs to be signed by a different account
       // (or maybe already was!)
-      if (pk !== publicKey) continue; // eslint-disable-line no-continue
+      if (authEntryAddress !== address) continue; // eslint-disable-line no-continue
+
+      const sign: typeof signAuthEntry = signAuthEntry ?? Promise.resolve;
 
       // eslint-disable-next-line no-await-in-loop
       authEntries[i] = await authorizeEntry(
         entry,
-        async (preimage) =>
-          Buffer.from(await signAuthEntry(preimage.toXDR("base64")), "base64"),
+        async (preimage) => {
+          const { signedAuthEntry, error } = await sign(preimage.toXDR("base64"), {
+            address,
+          });
+          this.handleWalletError(error);
+          return Buffer.from(signedAuthEntry, "base64");
+        },
         await expiration, // eslint-disable-line no-await-in-loop
         this.options.networkPassphrase,
       );
@@ -897,28 +979,28 @@ export class AssembledTransaction<T> {
   }
 
   /**
-   * Restores the footprint (resource ledger entries that can be read or written) 
-   * of an expired transaction. 
-   * 
+   * Restores the footprint (resource ledger entries that can be read or written)
+   * of an expired transaction.
+   *
    * The method will:
    * 1. Build a new transaction aimed at restoring the necessary resources.
    * 2. Sign this new transaction if a `signTransaction` handler is provided.
    * 3. Send the signed transaction to the network.
    * 4. Await and return the response from the network.
-   * 
+   *
    * Preconditions:
    * - A `signTransaction` function must be provided during the Client initialization.
    * - The provided `restorePreamble` should include a minimum resource fee and valid
    *   transaction data.
-   * 
-   * @throws {Error} - Throws an error if no `signTransaction` function is provided during 
+   *
+   * @throws {Error} - Throws an error if no `signTransaction` function is provided during
    * Client initialization.
-   * @throws {AssembledTransaction.Errors.RestoreFailure} - Throws a custom error if the 
+   * @throws {AssembledTransaction.Errors.RestoreFailure} - Throws a custom error if the
    * restore transaction fails, providing the details of the failure.
- */
+   */
   async restoreFootprint(
     /**
-     * The preamble object containing data required to 
+     * The preamble object containing data required to
      * build the restore transaction.
      */
     restorePreamble: {

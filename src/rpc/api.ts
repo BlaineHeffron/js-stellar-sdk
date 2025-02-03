@@ -1,14 +1,7 @@
 import { Contract, SorobanDataBuilder, xdr } from '@stellar/stellar-base';
 
 /* tslint:disable-next-line:no-namespace */
-/** @namespace Api */
 export namespace Api {
-
-  export interface Cost {
-    cpuInsns: string;
-    memBytes: string;
-  }
-
   export interface GetHealthResponse {
     status: 'healthy';
   }
@@ -26,32 +19,33 @@ export namespace Api {
     key: string;
     /** a base-64 encoded {@link xdr.LedgerEntryData} instance */
     xdr: string;
-    /** optional, a future ledger number upon which this entry will expire
+    /**
+     * optional, a future ledger number upon which this entry will expire
      *  based on https://github.com/stellar/soroban-tools/issues/1010
      */
     liveUntilLedgerSeq?: number;
   }
 
-  /** An XDR-parsed version of {@link RawLedgerEntryResult} */
+  /** An XDR-parsed version of {@link this.RawLedgerEntryResult} */
   export interface GetLedgerEntriesResponse {
     entries: LedgerEntryResult[];
     latestLedger: number;
   }
 
-  /** @see https://soroban.stellar.org/api/methods/getLedgerEntries */
+  /** @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLedgerEntries */
   export interface RawGetLedgerEntriesResponse {
     entries?: RawLedgerEntryResult[];
     latestLedger: number;
   }
 
-  /** @see https://soroban.stellar.org/api/methods/getNetwork */
+  /** @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getNetwork */
   export interface GetNetworkResponse {
     friendbotUrl?: string;
     passphrase: string;
     protocolVersion: string;
   }
 
-  /** @see https://soroban.stellar.org/api/methods/getLatestLedger */
+  /** @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLatestLedger */
   export interface GetLatestLedgerResponse {
     id: string;
     sequence: number;
@@ -64,7 +58,7 @@ export namespace Api {
     FAILED = 'FAILED'
   }
 
-  /** @see https://soroban.stellar.org/api/methods/getTransaction */
+  /** @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getTransaction */
   export type GetTransactionResponse =
     | GetSuccessfulTransactionResponse
     | GetFailedTransactionResponse
@@ -72,6 +66,7 @@ export namespace Api {
 
   interface GetAnyTransactionResponse {
     status: GetTransactionStatus;
+    txHash: string;
     latestLedger: number;
     latestLedgerCloseTime: number;
     oldestLedger: number;
@@ -94,6 +89,7 @@ export namespace Api {
     envelopeXdr: xdr.TransactionEnvelope;
     resultXdr: xdr.TransactionResult;
     resultMetaXdr: xdr.TransactionMeta;
+    diagnosticEventsXdr?: xdr.DiagnosticEvent[];
   }
 
   export interface GetSuccessfulTransactionResponse
@@ -107,6 +103,7 @@ export namespace Api {
     envelopeXdr: xdr.TransactionEnvelope;
     resultXdr: xdr.TransactionResult;
     resultMetaXdr: xdr.TransactionMeta;
+    diagnosticEventsXdr?: xdr.DiagnosticEvent[];
 
     returnValue?: xdr.ScVal; // present iff resultMeta is a v3
   }
@@ -117,15 +114,71 @@ export namespace Api {
     latestLedgerCloseTime: number;
     oldestLedger: number;
     oldestLedgerCloseTime: number;
+    txHash: string;
 
     // the fields below are set if status is SUCCESS
     applicationOrder?: number;
     feeBump?: boolean;
+    ledger?: number;
+    createdAt?: number;
+
     envelopeXdr?: string;
     resultXdr?: string;
     resultMetaXdr?: string;
-    ledger?: number;
-    createdAt?: number;
+    diagnosticEventsXdr?: string[];
+  }
+
+  export interface GetTransactionsRequest {
+    startLedger: number;
+    cursor?: string;
+    limit?: number;
+  }
+
+  export interface RawTransactionInfo {
+    status: GetTransactionStatus;
+    ledger: number;
+    createdAt: number;
+    applicationOrder: number;
+    feeBump: boolean;
+    txHash: string;
+
+    envelopeXdr?: string;
+    resultXdr?: string;
+    resultMetaXdr?: string;
+    diagnosticEventsXdr?: string[];
+  }
+
+  export interface TransactionInfo {
+    status: GetTransactionStatus;
+    ledger: number;
+    createdAt: number;
+    applicationOrder: number;
+    feeBump: boolean;
+    txHash: string;
+
+    envelopeXdr: xdr.TransactionEnvelope;
+    resultXdr: xdr.TransactionResult;
+    resultMetaXdr: xdr.TransactionMeta;
+    returnValue?: xdr.ScVal;
+    diagnosticEventsXdr?: xdr.DiagnosticEvent[];
+  }
+
+  export interface GetTransactionsResponse {
+    transactions: TransactionInfo[];
+    latestLedger: number;
+    latestLedgerCloseTimestamp: number;
+    oldestLedger: number;
+    oldestLedgerCloseTimestamp: number;
+    cursor: string;
+  }
+
+  export interface RawGetTransactionsResponse {
+    transactions: RawTransactionInfo[];
+    latestLedger: number;
+    latestLedgerCloseTimestamp: number;
+    oldestLedger: number;
+    oldestLedgerCloseTimestamp: number;
+    cursor: string;
   }
 
   export type EventType = 'contract' | 'system' | 'diagnostic';
@@ -139,6 +192,7 @@ export namespace Api {
   export interface GetEventsResponse {
     latestLedger: number;
     events: EventResponse[];
+    cursor: string;
   }
 
   export interface EventResponse extends BaseEventResponse {
@@ -150,6 +204,7 @@ export namespace Api {
   export interface RawGetEventsResponse {
     latestLedger: number;
     events: RawEventResponse[];
+    cursor: string;
   }
 
   interface BaseEventResponse {
@@ -226,7 +281,7 @@ export namespace Api {
   }
 
   /**
-   * Simplifies {@link RawSimulateTransactionResponse} into separate interfaces
+   * Simplifies {@link Api.RawSimulateTransactionResponse} into separate interfaces
    * based on status:
    *   - on success, this includes all fields, though `result` is only present
    *     if an invocation was simulated (since otherwise there's nothing to
@@ -235,7 +290,7 @@ export namespace Api {
    *     fields
    *   - for all other errors, this only includes error fields
    *
-   * @see https://soroban.stellar.org/api/methods/simulateTransaction#returns
+   * @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/simulateTransaction
    */
   export type SimulateTransactionResponse =
     | SimulateTransactionSuccessResponse
@@ -253,7 +308,6 @@ export namespace Api {
      * The field is always present, but may be empty in cases where:
      *   - you didn't simulate an invocation or
      *   - there were no events
-     * @see {@link humanizeEvents}
      */
     events: xdr.DiagnosticEvent[];
 
@@ -266,7 +320,6 @@ export namespace Api {
     extends BaseSimulateTransactionResponse {
     transactionData: SorobanDataBuilder;
     minResourceFee: string;
-    cost: Cost;
 
     /** present only for invocation simulation */
     result?: SimulateHostFunctionResult;
@@ -337,7 +390,7 @@ export namespace Api {
     xdr: string;
   }
 
-  /** @see https://soroban.stellar.org/api/methods/simulateTransaction#returns */
+  /** @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/simulateTransaction */
   export interface RawSimulateTransactionResponse {
     id: string;
     latestLedger: number;
@@ -347,18 +400,75 @@ export namespace Api {
     /** These are xdr.DiagnosticEvents in base64 */
     events?: string[];
     minResourceFee?: string;
-    /** This will only contain a single element if present, because only a single
+    /**
+     * This will only contain a single element if present, because only a single
      * invokeHostFunctionOperation is supported per transaction.
      * */
     results?: RawSimulateHostFunctionResult[];
-    cost?: Cost;
     /** Present if succeeded but has expired ledger entries */
     restorePreamble?: {
       minResourceFee: string;
       transactionData: string;
     };
 
-    /** State Difference information */
+    /** State difference information */
     stateChanges?: RawLedgerEntryChange[];
+  }
+
+  export interface GetVersionInfoResponse {
+    version: string;
+    commitHash: string;
+    buildTimestamp: string;
+    captiveCoreVersion: string;
+    protocolVersion: number; // uint32
+
+    /// @deprecated
+    commit_hash: string;
+    /// @deprecated
+    build_timestamp: string;
+    /// @deprecated
+    captive_core_version: string;
+    /// @deprecated
+    protocol_version: number; // uint32
+  }
+
+  export interface GetFeeStatsResponse {
+    sorobanInclusionFee: FeeDistribution;
+    inclusionFee: FeeDistribution;
+    latestLedger: number; // uint32
+  }
+
+  interface FeeDistribution {
+    max: string;    // uint64
+    min: string;    // uint64
+    mode: string;   // uint64
+    p10: string;    // uint64
+    p20: string;    // uint64
+    p30: string;    // uint64
+    p40: string;    // uint64
+    p50: string;    // uint64
+    p60: string;    // uint64
+    p70: string;    // uint64
+    p80: string;    // uint64
+    p90: string;    // uint64
+    p95: string;    // uint64
+    p99: string;    // uint64
+
+    transactionCount: string; // uint32
+    ledgerCount: number; // uint32
+  }
+
+  export interface BalanceResponse {
+    latestLedger: number;
+    /** present only on success, otherwise request malformed or no balance */
+    balanceEntry?: {
+      /** a 64-bit integer */
+      amount: string;
+      authorized: boolean;
+      clawback: boolean;
+
+      lastModifiedLedgerSeq?: number;
+      liveUntilLedgerSeq?: number;
+    };
   }
 }

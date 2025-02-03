@@ -1,9 +1,10 @@
 /* disable max-classes rule, because extending error shouldn't count! */
 /* eslint max-classes-per-file: 0 */
 import type { MethodOptions } from "./types";
-import { Server } from "../rpc/server"
+import { Server } from "../rpc"
 import { Api } from "../rpc/api"
-import { DEFAULT_TIMEOUT, withExponentialBackoff } from "./utils";
+import { withExponentialBackoff } from "./utils";
+import { DEFAULT_TIMEOUT } from "./types";
 import type { AssembledTransaction } from "./assembled_transaction";
 
 /**
@@ -19,6 +20,12 @@ import type { AssembledTransaction } from "./assembled_transaction";
  *    {@link MethodOptions.timeoutInSeconds} seconds. See all attempts in
  *    `getTransactionResponseAll` and the most recent attempt in
  *    `getTransactionResponse`.
+ *
+ * @memberof module:contract
+ * @class
+ *
+ * @param {Function} signTransaction More info in {@link MethodOptions}
+ * @param {module:contract.AssembledTransaction<T>} assembled {@link AssembledTransaction} from which this SentTransaction was initialized
  */
 export class SentTransaction<T> {
   public server: Server;
@@ -50,7 +57,6 @@ export class SentTransaction<T> {
   };
 
   constructor(
-    _: any, // deprecated: used to take sentTransaction, need to wait for major release for breaking change
     public assembled: AssembledTransaction<T>,
   ) {
     this.server = new Server(this.assembled.options.rpcUrl, {
@@ -59,16 +65,14 @@ export class SentTransaction<T> {
   }
 
   /**
-   * Initialize a `SentTransaction` from `options` and a `signed` 
+   * Initialize a `SentTransaction` from `options` and a `signed`
    * AssembledTransaction. This will also send the transaction to the network.
    */
   static init = async <U>(
-    /** @deprecated variable is ignored. Now handled by AssembledTransaction. */
-    _: any, // eslint-disable-line @typescript-eslint/no-unused-vars
     /** {@link AssembledTransaction} from which this SentTransaction was initialized */
     assembled: AssembledTransaction<U>,
   ): Promise<SentTransaction<U>> => {
-    const tx = new SentTransaction(undefined, assembled);
+    const tx = new SentTransaction(assembled);
     const sent = await tx.send();
     return sent;
   };

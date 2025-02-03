@@ -1,30 +1,113 @@
-import { xdr } from "@stellar/stellar-base";
+import {
+  Operation,
+  xdr,
+  Address,
+} from "@stellar/stellar-base";
 import { Spec } from "./spec";
 import { Server } from '../rpc';
 import { AssembledTransaction } from "./assembled_transaction";
 import type { ClientOptions, MethodOptions } from "./types";
 import { processSpecEntryStream } from './utils';
 
+const CONSTRUCTOR_FUNC = "__constructor";
+
+async function specFromWasm(wasm: Buffer) {
+  const wasmModule = await WebAssembly.compile(wasm);
+  const xdrSections = WebAssembly.Module.customSections(
+    wasmModule,
+    "contractspecv0"
+  );
+  if (xdrSections.length === 0) {
+    throw new Error("Could not obtain contract spec from wasm");
+  }
+  const bufferSection = Buffer.from(xdrSections[0]);
+  const specEntryArray = processSpecEntryStream(bufferSection);
+  const spec = new Spec(specEntryArray);
+  return spec;
+}
+
+async function specFromWasmHash(
+  wasmHash: Buffer | string,
+  options: Server.Options & { rpcUrl: string },
+  format: "hex" | "base64" = "hex"
+): Promise<Spec> {
+  if (!options || !options.rpcUrl) {
+    throw new TypeError("options must contain rpcUrl");
+  }
+  const { rpcUrl, allowHttp } = options;
+  const serverOpts: Server.Options = { allowHttp };
+  const server = new Server(rpcUrl, serverOpts);
+  const wasm = await server.getContractWasmByHash(wasmHash, format);
+  return specFromWasm(wasm);
+}
+
+/**
+ * Generate a class from the contract spec that where each contract method
+ * gets included with an identical name.
+ *
+ * Each method returns an {@link module:contract.AssembledTransaction | AssembledTransaction} that can
+ * be used to modify, simulate, decode results, and possibly sign, & submit the
+ * transaction.
+ *
+ * @memberof module:contract
+ *
+ * @class
+ * @param {module:contract.Spec} spec {@link Spec} to construct a Client for
+ * @param {ClientOptions} options see {@link ClientOptions}
+ */
 export class Client {
-  /**
-   * Generate a class from the contract spec that where each contract method
-   * gets included with an identical name.
-   *
-   * Each method returns an {@link AssembledTransaction} that can be used to
-   * modify, simulate, decode results, and possibly sign, & submit the
-   * transaction.
-   */
+  static async deploy<T = Client>(
+    /** Constructor/Initialization Args for the contract's `__constructor` method */
+    args: Record<string, any> | null,
+    /** Options for initalizing a Client as well as for calling a method, with extras specific to deploying. */
+    options: MethodOptions &
+      Omit<ClientOptions, "contractId"> & {
+        /** The hash of the Wasm blob, which must already be installed on-chain. */
+        wasmHash: Buffer | string;
+        /** Salt used to generate the contract's ID. Passed through to {@link Operation.createCustomContract}. Default: random. */
+        salt?: Buffer | Uint8Array;
+        /** The format used to decode `wasmHash`, if it's provided as a string. */
+        format?: "hex" | "base64";
+      }
+  ): Promise<AssembledTransaction<T>> {
+    const { wasmHash, salt, format, fee, timeoutInSeconds, simulate, ...clientOptions } = options;
+    const spec = await specFromWasmHash(wasmHash, clientOptions, format);
+
+    const operation = Operation.createCustomContract({
+      address: new Address(options.publicKey!),
+      wasmHash: typeof wasmHash === "string"
+        ? Buffer.from(wasmHash, format ?? "hex")
+        : (wasmHash as Buffer),
+      salt,
+      constructorArgs: args
+        ? spec.funcArgsToScVals(CONSTRUCTOR_FUNC, args)
+        : []
+    });
+
+    return AssembledTransaction.buildWithOp(operation, {
+      fee,
+      timeoutInSeconds,
+      simulate,
+      ...clientOptions,
+      contractId: "ignored",
+      method: CONSTRUCTOR_FUNC,
+      parseResultXdr: (result) =>
+        new Client(spec, { ...clientOptions, contractId: Address.fromScVal(result).toString() })
+    }) as unknown as AssembledTransaction<T>;
+  }
+
   constructor(
-    /** {@link Spec} to construct a Client for */
     public readonly spec: Spec,
-    /** see {@link ClientOptions} */
-    public readonly options: ClientOptions,
+    public readonly options: ClientOptions
   ) {
     this.spec.funcs().forEach((xdrFn) => {
       const method = xdrFn.name().toString();
+      if (method === CONSTRUCTOR_FUNC) {
+        return;
+      }
       const assembleTransaction = (
         args?: Record<string, any>,
-        methodOptions?: MethodOptions,
+        methodOptions?: MethodOptions
       ) =>
         AssembledTransaction.build({
           method,
@@ -53,11 +136,11 @@ export class Client {
   /**
    * Generates a Client instance from the provided ClientOptions and the contract's wasm hash.
    * The wasmHash can be provided in either hex or base64 format.
-   * 
-   * @param wasmHash The hash of the contract's wasm binary, in either hex or base64 format.
-   * @param options The ClientOptions object containing the necessary configuration, including the rpcUrl.
-   * @param format The format of the provided wasmHash, either "hex" or "base64". Defaults to "hex".
-   * @returns A Promise that resolves to a Client instance.
+   *
+   * @param {Buffer | string} wasmHash The hash of the contract's wasm binary, in either hex or base64 format.
+   * @param {ClientOptions} options The ClientOptions object containing the necessary configuration, including the rpcUrl.
+   * @param {('hex' | 'base64')} [format='hex'] The format of the provided wasmHash, either "hex" or "base64". Defaults to "hex".
+   * @returns {Promise<module:contract.Client>} A Promise that resolves to a Client instance.
    * @throws {TypeError} If the provided options object does not contain an rpcUrl.
    */
   static async fromWasmHash(wasmHash: Buffer | string,
@@ -76,29 +159,22 @@ export class Client {
 
   /**
    * Generates a Client instance from the provided ClientOptions and the contract's wasm binary.
-   * 
-   * @param wasm The contract's wasm binary as a Buffer.
-   * @param options The ClientOptions object containing the necessary configuration.
-   * @returns A Promise that resolves to a Client instance.
+   *
+   * @param {Buffer} wasm The contract's wasm binary as a Buffer.
+   * @param {ClientOptions} options The ClientOptions object containing the necessary configuration.
+   * @returns {Promise<module:contract.Client>} A Promise that resolves to a Client instance.
    * @throws {Error} If the contract spec cannot be obtained from the provided wasm binary.
    */
   static async fromWasm(wasm: Buffer, options: ClientOptions): Promise<Client> {
-    const wasmModule = await WebAssembly.compile(wasm);
-    const xdrSections = WebAssembly.Module.customSections(wasmModule, "contractspecv0");
-    if (xdrSections.length === 0) {
-      throw new Error('Could not obtain contract spec from wasm');
-    }
-    const bufferSection = Buffer.from(xdrSections[0]);
-    const specEntryArray = processSpecEntryStream(bufferSection);
-    const spec = new Spec(specEntryArray);
+    const spec = await specFromWasm(wasm);
     return new Client(spec, options);
   }
 
   /**
    * Generates a Client instance from the provided ClientOptions, which must include the contractId and rpcUrl.
-   * 
-   * @param options The ClientOptions object containing the necessary configuration, including the contractId and rpcUrl.
-   * @returns A Promise that resolves to a Client instance.
+   *
+   * @param {ClientOptions} options The ClientOptions object containing the necessary configuration, including the contractId and rpcUrl.
+   * @returns {Promise<module:contract.Client>} A Promise that resolves to a Client instance.
    * @throws {TypeError} If the provided options object does not contain both rpcUrl and contractId.
    */
   static async from(options: ClientOptions): Promise<Client> {
@@ -126,6 +202,4 @@ export class Client {
   };
 
   txFromXDR = <T>(xdrBase64: string): AssembledTransaction<T> => AssembledTransaction.fromXDR(this.options, xdrBase64, this.spec);
-
 }
-

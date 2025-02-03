@@ -13,7 +13,11 @@ describe("Server#getEvents", function () {
   });
 
   it("requests the correct endpoint", function (done) {
-    let result = { latestLedger: 0, events: [] };
+    let result = {
+      cursor: "164090849041387521-3",
+      latestLedger: 0,
+      events: [],
+    };
     setupMock(
       this.axiosMock,
       {
@@ -38,6 +42,7 @@ describe("Server#getEvents", function () {
   it("can build wildcard filters", function (done) {
     let result = {
       latestLedger: 1,
+      cursor: "164090849041387521-3",
       events: filterEvents(getEventsResponseFixture, "*/*"),
     };
     expect(result.events).to.not.have.lengthOf(0, JSON.stringify(result));
@@ -76,6 +81,7 @@ describe("Server#getEvents", function () {
   it("can build matching filters", function (done) {
     let result = {
       latestLedger: 1,
+      cursor: "164090849041387521-3",
       events: filterEvents(
         getEventsResponseFixture,
         `${topicVals[0]}/${topicVals[1]}`,
@@ -116,6 +122,7 @@ describe("Server#getEvents", function () {
   it("can build mixed filters", function (done) {
     let result = {
       latestLedger: 3,
+      cursor: "164090849041387521-3",
       events: filterEventsByLedger(
         filterEvents(getEventsResponseFixture, `${topicVals[0]}/*`),
         2,
@@ -156,6 +163,7 @@ describe("Server#getEvents", function () {
   it("can paginate", function (done) {
     let result = {
       latestLedger: 3,
+      cursor: "164090849041387521-3",
       events: filterEventsByLedger(
         filterEvents(getEventsResponseFixture, "*/*"),
         2,
@@ -242,7 +250,7 @@ let getEventsResponseFixture = [
     ledgerClosedAt: "2022-11-16T16:10:41Z",
     contractId: "",
     id: "0164090849041387521-0000000003",
-    pagingToken: "164090849041387521-3",
+    cursor: "164090849041387521-3",
     inSuccessfulContractCall: true,
     topic: topicVals.slice(0, 2),
     value: eventVal,
@@ -254,7 +262,7 @@ let getEventsResponseFixture = [
     ledgerClosedAt: "2022-11-16T16:10:41Z",
     contractId,
     id: "0164090849041387521-0000000003",
-    pagingToken: "164090849041387521-3",
+    cursor: "164090849041387521-3",
     inSuccessfulContractCall: true,
     topic: topicVals.slice(0, 2),
     value: eventVal,
@@ -266,7 +274,7 @@ let getEventsResponseFixture = [
     ledgerClosedAt: "2022-11-16T16:10:41Z",
     contractId,
     id: "0164090849041387521-0000000003",
-    pagingToken: "164090849041387521-3",
+    cursor: "164090849041387521-3",
     inSuccessfulContractCall: true,
     topic: [topicVals[0]],
     value: eventVal,
@@ -278,7 +286,7 @@ let getEventsResponseFixture = [
     ledgerClosedAt: "2022-12-14T01:01:20Z",
     contractId,
     id: "0000000171798695936-0000000001",
-    pagingToken: "0000000171798695936-0000000001",
+    cursor: "0000000171798695936-0000000001",
     inSuccessfulContractCall: true,
     topic: topicVals,
     value: eventVal,

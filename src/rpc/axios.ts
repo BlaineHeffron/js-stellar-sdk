@@ -1,8 +1,11 @@
-import axios from 'axios';
+import { create, HttpClient } from "../http-client";
 
-/* tslint:disable-next-line:no-var-requires */
-export const version = require('../../package.json').version;
-export const AxiosClient = axios.create({
+// eslint-disable-next-line prefer-import/prefer-import-over-require, global-require, @typescript-eslint/naming-convention
+declare const __PACKAGE_VERSION__: string;
+export const version = __PACKAGE_VERSION__;
+
+
+export const AxiosClient: HttpClient = create({
   headers: {
     'X-Client-Name': 'js-soroban-client',
     'X-Client-Version': version

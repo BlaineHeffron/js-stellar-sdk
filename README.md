@@ -7,15 +7,15 @@
 </div>
 
 <p align="center">
-  <a href="https://badge.fury.io/js/stellar-sdk"><img src="https://badge.fury.io/js/stellar-sdk.svg" alt="npm version" height="18"></a>
-  <a href="https://www.npmjs.com/package/stellar-sdk">
-    <img alt="Weekly Downloads" src="https://img.shields.io/npm/dw/stellar-sdk" />
+  <a href="https://badge.fury.io/js/@stellar%2Fstellar-sdk"><img src="https://badge.fury.io/js/@stellar%2Fstellar-sdk.svg" alt="npm version" height="18"></a>
+  <a href="https://www.npmjs.com/package/@stellar/stellar-sdk">
+    <img alt="Weekly Downloads" src="https://img.shields.io/npm/dw/@stellar/stellar-sdk" />
   </a>
   <a href="https://github.com/stellar/js-stellar-sdk/actions/workflows/tests.yml"><img alt="Test Status" src="https://github.com/stellar/js-stellar-sdk/actions/workflows/tests.yml/badge.svg" /></a>
 </p>
 
 js-stellar-sdk is a JavaScript library for communicating with a
-[Stellar Horizon server](https://github.com/stellar/go/tree/master/services/horizon) and [Soroban RPC](https://soroban.stellar.org/docs/reference/rpc).
+[Stellar Horizon server](https://github.com/stellar/go/tree/master/services/horizon) and [Soroban RPC](https://developers.stellar.org/docs/data/rpc).
 It is used for building Stellar apps either on Node.js or in the browser, though it can be used in other environments with some tinkering.
 
 It provides:
@@ -65,7 +65,7 @@ You can use a CDN:
 <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-sdk/{version}/stellar-sdk.js"></script>
 ```
 
-Note that this method relies using a third party to host the JS library. This may not be entirely secure. You can self-host it via [Bower](http://bower.io):
+Note that this method relies on using a third party to host the JS library. This may not be entirely secure. You can self-host it via [Bower](http://bower.io):
 
 ```shell
 bower install @stellar/stellar-sdk
@@ -85,18 +85,40 @@ If you don't want to use or install Bower, you can copy the packaged JS files fr
 | Always make sure that you are using the latest version number. They can be found on the [releases page](https://github.com/stellar/js-stellar-sdk/releases) in GitHub. |
 |----|
 
+### Custom Installation
+
+You can configure whether or not to build the browser bundle with the axios dependency. In order to turn off the axios dependency, set the USE_AXIOS environment variable to false. You can also turn off the eventsource dependency by setting USE_EVENTSOURCE to false.
+
+#### Build without Axios
+```
+npm run build:browser:no-axios
+```
+This will create `stellar-sdk-no-axios.js` in `dist/`.
+
+#### Build without EventSource
+```
+npm run build:browser:no-eventsource
+```
+This will create `stellar-sdk-no-eventsource.js` in `dist/`.
+
+#### Build without Axios and Eventsource
+```
+npm run build:browser:minimal
+```
+This will create `stellar-sdk-minimal.js` in `dist/`.
+
 ## Usage
 
 The usage documentation for this library lives in a handful of places:
 
- * across the [Stellar Developer Docs](), which includes tutorials and examples,
+ * across the [Stellar Developer Docs](https://developers.stellar.org), which includes tutorials and examples,
  * within [this repository itself](https://github.com/stellar/js-stellar-sdk/blob/master/docs/reference/readme.md), and
  * on the generated [API doc site](https://stellar.github.io/js-stellar-sdk/).
 
 You can also refer to:
 
- * the [documentation](https://developers.stellar.org/network/horizon) for the Horizon REST API (if using the `Horizon` module) and
- * the [documentation](https://soroban.stellar.org/docs/reference/rpc) for Soroban RPC's API (if using the `rpc` module)
+ * the [documentation](https://developers.stellar.org/docs/data/horizon) for the Horizon REST API (if using the `Horizon` module) and
+ * the [documentation](https://developers.stellar.org/docs/data/rpc) for Soroban RPC's API (if using the `rpc` module)
 
 ### Usage with React-Native
 
@@ -129,7 +151,7 @@ There is also a [sample](https://github.com/fnando/rn-stellar-sdk-sample) that y
 ```
 yarn rn-nodeify --install process,url,events,https,http,util,stream,crypto,vm,buffer --hack --yarn
 ```
-3. Add `import "./shim";` to the your app's entry point (by default `./App.js`)
+3. Add `import "./shim";` to your app's entry point (by default `./App.js`)
 4. `yarn add @stellar/stellar-sdk`
 5. `expo install expo-random`
 

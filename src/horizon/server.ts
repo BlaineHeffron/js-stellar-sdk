@@ -10,6 +10,7 @@ import {
 } from "@stellar/stellar-base";
 import URI from "urijs";
 
+import type { TransactionBuilder } from "@stellar/stellar-base";
 import { CallBuilder } from "./call_builder";
 import { Config } from "../config";
 import {
@@ -37,12 +38,18 @@ import { StrictSendPathCallBuilder } from "./strict_send_path_call_builder";
 import { TradeAggregationCallBuilder } from "./trade_aggregation_call_builder";
 import { TradesCallBuilder } from "./trades_call_builder";
 import { TransactionCallBuilder } from "./transaction_call_builder";
-
+// eslint-disable-next-line import/no-named-as-default
 import AxiosClient, {
   getCurrentServerTime,
 } from "./horizon_axios_client";
 
-export const SUBMIT_TRANSACTION_TIMEOUT = 60 * 1000;
+/**
+ * Default transaction submission timeout for Horizon requests, in milliseconds
+ * @constant {number}
+ * @default 60000
+ * @memberof module:Horizon.Server
+ */
+export const SUBMIT_TRANSACTION_TIMEOUT: number = 60 * 1000;
 
 const STROOPS_IN_LUMEN = 10000000;
 
@@ -50,30 +57,29 @@ const STROOPS_IN_LUMEN = 10000000;
 // SEP 29 uses this value to define transaction memo requirements for incoming payments.
 const ACCOUNT_REQUIRES_MEMO = "MQ==";
 
-function _getAmountInLumens(amt: BigNumber) {
+function getAmountInLumens(amt: BigNumber) {
   return new BigNumber(amt).div(STROOPS_IN_LUMEN).toString();
 }
 
 /**
- * Server handles the network connection to a [Horizon](https://developers.stellar.org/api/introduction/)
+ * Server handles the network connection to a [Horizon](https://developers.stellar.org/docs/data/horizon)
  * instance and exposes an interface for requests to that instance.
- * @constructor
+ * @class
+ * @alias module:Horizon.Server
+ * @memberof module:Horizon
+ *
  * @param {string} serverURL Horizon Server URL (ex. `https://horizon-testnet.stellar.org`).
- * @param {object} [opts] Options object
- * @param {boolean} [opts.allowHttp] - Allow connecting to http servers, default: `false`. This must be set to false in production deployments! You can also use {@link Config} class to set this globally.
- * @param {string} [opts.appName] - Allow set custom header `X-App-Name`, default: `undefined`.
- * @param {string} [opts.appVersion] - Allow set custom header `X-App-Version`, default: `undefined`.
- * @param {string} [opts.authToken] - Allow set custom header `X-Auth-Token`, default: `undefined`.
+ * @param {module:Horizon.Server.Options} [opts] Options object
  */
-export class Server {
+export class HorizonServer {
   /**
-   * serverURL Horizon Server URL (ex. `https://horizon-testnet.stellar.org`).
+   * Horizon Server URL (ex. `https://horizon-testnet.stellar.org`)
    *
-   * TODO: Solve `URI(this.serverURL as any)`.
+   * @todo Solve `URI(this.serverURL as any)`.
    */
   public readonly serverURL: URI;
 
-  constructor(serverURL: string, opts: Server.Options = {}) {
+  constructor(serverURL: string, opts: HorizonServer.Options = {}) {
     this.serverURL = URI(serverURL);
 
     const allowHttp =
@@ -99,6 +105,7 @@ export class Server {
       AxiosClient.interceptors.request.use((config) => {
         // merge the custom headers with an existing headers, where customs
         // override defaults
+        config.headers = config.headers || {};
         config.headers = Object.assign(config.headers, customHeaders);
 
         return config;
@@ -122,20 +129,18 @@ export class Server {
    * not when you build or submit the transaction! So give yourself enough time to get
    * the transaction built and signed before submitting.
    *
-   * Example:
-   *
-   * ```javascript
+   * @example
    * const transaction = new StellarSdk.TransactionBuilder(accountId, {
-   *  fee: await StellarSdk.Server.fetchBaseFee(),
-   *  timebounds: await StellarSdk.Server.fetchTimebounds(100)
+   *   fee: await StellarSdk.Server.fetchBaseFee(),
+   *   timebounds: await StellarSdk.Server.fetchTimebounds(100)
    * })
-   *  .addOperation(operation)
-   *  // normally we would need to call setTimeout here, but setting timebounds
-   *  // earlier does the trick!
-   *  .build();
-   * ```
-   * @argument {number} seconds Number of seconds past the current time to wait.
-   * @argument {bool} [_isRetry=false] True if this is a retry. Only set this internally!
+   *   .addOperation(operation)
+   *   // normally we would need to call setTimeout here, but setting timebounds
+   *   // earlier does the trick!
+   *   .build();
+   *
+   * @param {number} seconds Number of seconds past the current time to wait.
+   * @param {boolean} [_isRetry] True if this is a retry. Only set this internally!
    * This is to avoid a scenario where Horizon is horking up the wrong date.
    * @returns {Promise<Timebounds>} Promise that resolves a `timebounds` object
    * (with the shape `{ minTime: 0, maxTime: N }`) that you can set the `timebounds` option to.
@@ -143,7 +148,7 @@ export class Server {
   public async fetchTimebounds(
     seconds: number,
     _isRetry: boolean = false,
-  ): Promise<Server.Timebounds> {
+  ): Promise<HorizonServer.Timebounds> {
     // AxiosClient instead of this.ledgers so we can get at them headers
     const currentTime = getCurrentServerTime(this.serverURL.hostname());
 
@@ -165,7 +170,7 @@ export class Server {
     // otherwise, retry (by calling the root endpoint)
     // toString automatically adds the trailing slash
     await AxiosClient.get(URI(this.serverURL as any).toString());
-    return await this.fetchTimebounds(seconds, true);
+    return this.fetchTimebounds(seconds, true);
   }
 
   /**
@@ -182,9 +187,10 @@ export class Server {
 
   /**
    * Fetch the fee stats endpoint.
-   * @see [Fee Stats](https://developers.stellar.org/api/aggregations/fee-stats/)
+   * @see {@link https://developers.stellar.org/docs/data/horizon/api-reference/aggregations/fee-stats|Fee Stats}
    * @returns {Promise<HorizonApi.FeeStatsResponse>} Promise that resolves to the fee stats returned by Horizon.
    */
+  // eslint-disable-next-line require-await
   public async feeStats(): Promise<HorizonApi.FeeStatsResponse> {
     const cb = new CallBuilder<HorizonApi.FeeStatsResponse>(
       URI(this.serverURL as any),
@@ -194,17 +200,40 @@ export class Server {
   }
 
   /**
+   * Fetch the Horizon server's root endpoint.
+   * @returns {Promise<HorizonApi.RootResponse>} Promise that resolves to the root endpoint returned by Horizon.
+   */
+  public async root(): Promise<HorizonApi.RootResponse> {
+    const cb = new CallBuilder<HorizonApi.RootResponse>(
+      URI(this.serverURL as any),
+    );
+    return cb.call();
+  }
+
+  /**
    * Submits a transaction to the network.
    *
-   * By default this function calls {@link Server#checkMemoRequired}, you can
+   * By default this function calls {@link Horizon.Server#checkMemoRequired}, you can
    * skip this check by setting the option `skipMemoRequiredCheck` to `true`.
    *
    * If you submit any number of `manageOffer` operations, this will add an
    * attribute to the response that will help you analyze what happened with
    * your offers.
    *
-   * Ex:
-   * ```javascript
+   * For example, you'll want to examine `offerResults` to add affordances like
+   * these to your app:
+   * - If `wasImmediatelyFilled` is true, then no offer was created. So if you
+   *   normally watch the `Server.offers` endpoint for offer updates, you
+   *   instead need to check `Server.trades` to find the result of this filled
+   *   offer.
+   * - If `wasImmediatelyDeleted` is true, then the offer you submitted was
+   *   deleted without reaching the orderbook or being matched (possibly because
+   *   your amounts were rounded down to zero). So treat the just-submitted
+   *   offer request as if it never happened.
+   * - If `wasPartiallyFilled` is true, you can tell the user that
+   *   `amountBought` or `amountSold` have already been transferred.
+   *
+   * @example
    * const res = {
    *   ...response,
    *   offerResults: [
@@ -272,23 +301,8 @@ export class Server {
    *     }
    *   ]
    * }
-   * ```
    *
-   * For example, you'll want to examine `offerResults` to add affordances like
-   * these to your app:
-   * * If `wasImmediatelyFilled` is true, then no offer was created. So if you
-   *   normally watch the `Server.offers` endpoint for offer updates, you
-   *   instead need to check `Server.trades` to find the result of this filled
-   *   offer.
-   * * If `wasImmediatelyDeleted` is true, then the offer you submitted was
-   *   deleted without reaching the orderbook or being matched (possibly because
-   *   your amounts were rounded down to zero). So treat the just-submitted
-   *   offer request as if it never happened.
-   * * If `wasPartiallyFilled` is true, you can tell the user that
-   *   `amountBought` or `amountSold` have already been transferred.
-   *
-   * @see [Post
-   * Transaction](https://developers.stellar.org/api/resources/transactions/post/)
+   * @see {@link https://developers.stellar.org/docs/data/horizon/api-reference/resources/submit-a-transaction|Submit a Transaction}
    * @param {Transaction|FeeBumpTransaction} transaction - The transaction to submit.
    * @param {object} [opts] Options object
    * @param {boolean} [opts.skipMemoRequiredCheck] - Allow skipping memo
@@ -299,7 +313,7 @@ export class Server {
    */
   public async submitTransaction(
     transaction: Transaction | FeeBumpTransaction,
-    opts: Server.SubmitTransactionOptions = { skipMemoRequiredCheck: false },
+    opts: HorizonServer.SubmitTransactionOptions = { skipMemoRequiredCheck: false },
   ): Promise<HorizonApi.SubmitTransactionResponse> {
     // only check for memo required if skipMemoRequiredCheck is false and the transaction doesn't include a memo.
     if (!opts.skipMemoRequiredCheck) {
@@ -380,8 +394,8 @@ export class Server {
                     // However, you can never be too careful.
                     default:
                       throw new Error(
-                        "Invalid offer result type: " +
-                          offerClaimedAtom.switch(),
+                        `Invalid offer result type: ${
+                          offerClaimedAtom.switch()}`,
                       );
                   }
 
@@ -423,9 +437,9 @@ export class Server {
                     sellerId,
                     offerId: offerClaimed.offerId().toString(),
                     assetSold,
-                    amountSold: _getAmountInLumens(claimedOfferAmountSold),
+                    amountSold: getAmountInLumens(claimedOfferAmountSold),
                     assetBought,
-                    amountBought: _getAmountInLumens(claimedOfferAmountBought),
+                    amountBought: getAmountInLumens(claimedOfferAmountBought),
                   };
                 });
 
@@ -443,7 +457,7 @@ export class Server {
                   offerId: offerXDR.offerId().toString(),
                   selling: {},
                   buying: {},
-                  amount: _getAmountInLumens(offerXDR.amount().toString()),
+                  amount: getAmountInLumens(offerXDR.amount().toString()),
                   price: {
                     n: offerXDR.price().n(),
                     d: offerXDR.price().d(),
@@ -474,8 +488,8 @@ export class Server {
                 currentOffer,
 
                 // this value is in stroops so divide it out
-                amountBought: _getAmountInLumens(amountBought),
-                amountSold: _getAmountInLumens(amountSold),
+                amountBought: getAmountInLumens(amountBought),
+                amountSold: getAmountInLumens(amountSold),
 
                 isFullyOpen:
                   !offersClaimed.length && effect !== "manageOfferDeleted",
@@ -491,9 +505,7 @@ export class Server {
             .filter((result: any) => !!result);
         }
 
-        return Object.assign({}, response.data, {
-          offerResults: hasManageOffer ? offerResults : undefined,
-        });
+        return { ...response.data, offerResults: hasManageOffer ? offerResults : undefined,};
       })
       .catch((response) => {
         if (response instanceof Error) {
@@ -506,6 +518,58 @@ export class Server {
           ),
         );
       });
+  }
+
+  /**
+   * Submits an asynchronous transaction to the network. Unlike the synchronous version, which blocks
+   * and waits for the transaction to be ingested in Horizon, this endpoint relays the response from
+   * core directly back to the user.
+   *
+   * By default, this function calls {@link HorizonServer#checkMemoRequired}, you can
+   * skip this check by setting the option `skipMemoRequiredCheck` to `true`.
+   *
+   * @see [Submit-Async-Transaction](https://developers.stellar.org/docs/data/horizon/api-reference/resources/submit-async-transaction)
+   * @param {Transaction|FeeBumpTransaction} transaction - The transaction to submit.
+   * @param {object} [opts] Options object
+   * @param {boolean} [opts.skipMemoRequiredCheck] - Allow skipping memo
+   * required check, default: `false`. See
+   * [SEP0029](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0029.md).
+   * @returns {Promise} Promise that resolves or rejects with response from
+   * horizon.
+   */
+  public async submitAsyncTransaction(
+      transaction: Transaction | FeeBumpTransaction,
+      opts: HorizonServer.SubmitTransactionOptions = { skipMemoRequiredCheck: false }
+  ): Promise<HorizonApi.SubmitAsyncTransactionResponse> {
+    // only check for memo required if skipMemoRequiredCheck is false and the transaction doesn't include a memo.
+    if (!opts.skipMemoRequiredCheck) {
+      await this.checkMemoRequired(transaction);
+    }
+
+    const tx = encodeURIComponent(
+        transaction
+            .toEnvelope()
+            .toXDR()
+            .toString("base64"),
+    );
+
+    return AxiosClient.post(
+        URI(this.serverURL as any)
+            .segment("transactions_async")
+            .toString(),
+        `tx=${tx}`,
+    ).then((response) => response.data
+    ).catch((response) => {
+      if (response instanceof Error) {
+        return Promise.reject(response);
+      }
+      return Promise.reject(
+          new BadResponseError(
+              `Transaction submission failed. Server responded: ${response.status} ${response.statusText}`,
+              response.data,
+          ),
+      );
+    });
   }
 
   /**
@@ -539,15 +603,15 @@ export class Server {
   /**
    * People on the Stellar network can make offers to buy or sell assets. This endpoint represents all the offers on the DEX.
    *
-   * You can query all offers for account using the function `.accountId`:
+   * You can query all offers for account using the function `.accountId`.
    *
-   * ```
+   * @example
    * server.offers()
-   *  .forAccount(accountId).call()
-   *  .then(function(offers) {
-   *    console.log(offers);
-   *  });
-   * ```
+   *   .forAccount(accountId).call()
+   *   .then(function(offers) {
+   *     console.log(offers);
+   *   });
+   *
    * @returns {OfferCallBuilder} New {@link OfferCallBuilder} object
    */
   public offers(): OfferCallBuilder {
@@ -713,10 +777,10 @@ export class Server {
    *
    * @param {Asset} base base asset
    * @param {Asset} counter counter asset
-   * @param {long} start_time lower time boundary represented as millis since epoch
-   * @param {long} end_time upper time boundary represented as millis since epoch
-   * @param {long} resolution segment duration as millis since epoch. *Supported values are 5 minutes (300000), 15 minutes (900000), 1 hour (3600000), 1 day (86400000) and 1 week (604800000).
-   * @param {long} offset segments can be offset using this parameter. Expressed in milliseconds. *Can only be used if the resolution is greater than 1 hour. Value must be in whole hours, less than the provided resolution, and less than 24 hours.
+   * @param {number} start_time lower time boundary represented as millis since epoch
+   * @param {number} end_time upper time boundary represented as millis since epoch
+   * @param {number} resolution segment duration as millis since epoch. *Supported values are 5 minutes (300000), 15 minutes (900000), 1 hour (3600000), 1 day (86400000) and 1 week (604800000).
+   * @param {number} offset segments can be offset using this parameter. Expressed in milliseconds. *Can only be used if the resolution is greater than 1 hour. Value must be in whole hours, less than the provided resolution, and less than 24 hours.
    * Returns new {@link TradeAggregationCallBuilder} object configured with the current Horizon server configuration.
    * @returns {TradeAggregationCallBuilder} New TradeAggregationCallBuilder instance
    */
@@ -750,7 +814,7 @@ export class Server {
    * Each account is checked sequentially instead of loading multiple accounts
    * at the same time from Horizon.
    *
-   * @see https://stellar.org/protocol/sep-29
+   * @see {@link https://stellar.org/protocol/sep-29|SEP-29: Account Memo Requirements}
    * @param {Transaction} transaction - The transaction to check.
    * @returns {Promise<void, Error>} - If any of the destination account
    * requires a memo, the promise will throw {@link AccountRequiresMemoError}.
@@ -769,7 +833,8 @@ export class Server {
 
     const destinations = new Set<string>();
 
-    for (let i = 0; i < transaction.operations.length; i++) {
+    /* eslint-disable no-continue */
+    for (let i = 0; i < transaction.operations.length; i+=1) {
       const operation = transaction.operations[i];
 
       switch (operation.type) {
@@ -793,6 +858,7 @@ export class Server {
       }
 
       try {
+        // eslint-disable-next-line no-await-in-loop
         const account = await this.loadAccount(destination);
         if (
           account.data_attr["config.memo_required"] === ACCOUNT_REQUIRES_MEMO
@@ -816,10 +882,21 @@ export class Server {
         continue;
       }
     }
+    /* eslint-enable no-continue */
   }
 }
 
-export namespace Server {
+/**
+ * Options for configuring connections to Horizon servers.
+ * @typedef {object} Options
+ * @memberof module:Horizon.Server
+ * @property {boolean} [allowHttp] Allow connecting to http servers, default: `false`. This must be set to false in production deployments! You can also use {@link Config} class to set this globally.
+ * @property {string} [appName] Allow set custom header `X-App-Name`, default: `undefined`.
+ * @property {string} [appVersion] Allow set custom header `X-App-Version`, default: `undefined`.
+ * @property {string} [authToken] Allow set custom header `X-Auth-Token`, default: `undefined`.
+ */
+
+export namespace HorizonServer {
   export interface Options {
     allowHttp?: boolean;
     appName?: string;

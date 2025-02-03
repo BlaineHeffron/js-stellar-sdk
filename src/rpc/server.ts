@@ -4,13 +4,19 @@ import URI from 'urijs';
 import {
   Account,
   Address,
+  Asset,
   Contract,
   FeeBumpTransaction,
   Keypair,
+  StrKey,
   Transaction,
+  nativeToScVal,
+  scValToNative,
   xdr
 } from '@stellar/stellar-base';
 
+import type { TransactionBuilder } from '@stellar/stellar-base';
+// eslint-disable-next-line import/no-named-as-default
 import AxiosClient from './axios';
 import { Api as FriendbotApi } from '../friendbot';
 import * as jsonrpc from './jsonrpc';
@@ -20,27 +26,70 @@ import {
   parseRawSendTransaction,
   parseRawSimulation,
   parseRawLedgerEntries,
-  parseRawEvents
+  parseRawEvents,
+  parseRawTransactions,
+  parseTransactionInfo,
 } from './parsers';
+import { Utils } from '../utils';
 
+/**
+ * Default transaction submission timeout for RPC requests, in milliseconds
+ * @constant {number}
+ * @default 60000
+ * @memberof module:rpc.Server
+ */
 export const SUBMIT_TRANSACTION_TIMEOUT = 60 * 1000;
 
-/** Specifies the durability namespace of contract-related ledger entries. */
+/**
+ * Specifies the durability namespace of contract-related ledger entries.
+ * @enum {('temporary' | 'persistent')}
+ * @memberof module:rpc
+ *
+ * @see {@link https://developers.stellar.org/docs/learn/smart-contract-internals/state-archival | State Archival docs}
+ * @see {@link https://docs.rs/soroban-sdk/latest/soroban_sdk/storage/struct.Storage.html | Rust SDK Storage docs}
+ */
 export enum Durability {
   Temporary = 'temporary',
   Persistent = 'persistent'
 }
 
-export namespace Server {
-  /** Describes the complex filter combinations available for event queries. */
+/**
+ * @typedef {object} GetEventsRequest Describes the complex filter combinations available for event queries.
+ * @property {Array.<module:rpc.Api.EventFilter>} filters Filters to use when querying events from the RPC server.
+ * @property {number} [startLedger] Ledger number (inclusive) to begin querying events.
+ * @property {string} [cursor] Page cursor (exclusive) to begin querying events.
+ * @property {number} [limit=100] The maximum number of events that should be returned in the RPC response.
+ * @memberof module:rpc.Server
+ */
+
+/**
+ * @typedef {object} ResourceLeeway Describes additional resource leeways for transaction simulation.
+ * @property {number} cpuInstructions Simulate the transaction with more CPU instructions available.
+ * @memberof module:rpc.Server
+ */
+
+/**
+ * @typedef {object} Options Options for configuring connections to RPC servers.
+ * @property {boolean} [allowHttp=false] Allow connecting to http servers, default: `false`. This must be set to false in production deployments!
+ * @property {number} [timeout=0] Allow a timeout, default: 0. Allows user to avoid nasty lag. You can also use {@link Config} class to set this globally.
+ * @property {Record<string, string>} [headers] Additional headers that should be added to any requests to the RPC server.
+ * @memberof module:rpc.Server
+ */
+
+export namespace RpcServer {
   export interface GetEventsRequest {
     filters: Api.EventFilter[];
     startLedger?: number; // either this or cursor
+    endLedger?: number; // either this or cursor
     cursor?: string; // either this or startLedger
     limit?: number;
   }
 
-  /** Describes additional resource leeways for transaction simulation. */
+  export interface PollingOptions {
+    attempts?: number;
+    sleepStrategy?: SleepStrategy;
+  }
+
   export interface ResourceLeeway {
     cpuInstructions: number;
   }
@@ -52,27 +101,79 @@ export namespace Server {
   }
 }
 
+const DEFAULT_GET_TRANSACTION_TIMEOUT: number = 30;
+
+/// A strategy that will sleep 1 second each time
+export const BasicSleepStrategy: SleepStrategy =
+(_iter: number) => 1000;
+
+/// A strategy that will sleep 1 second longer on each attempt
+export const LinearSleepStrategy: SleepStrategy =
+  (iter: number) => 1000 * iter;
+
+/**
+ * A function that returns the number of *milliseconds* to sleep
+ * on a given `iter`ation.
+ */
+export type SleepStrategy = (iter: number) => number;
+
+function findCreatedAccountSequenceInTransactionMeta(
+  meta: xdr.TransactionMeta
+): string {
+  let operations: xdr.OperationMeta[] = [];
+  switch (meta.switch()) {
+    case 0:
+      operations = meta.operations();
+      break;
+    case 1:
+    case 2:
+    case 3: // all three have the same interface
+      operations = (meta.value() as xdr.TransactionMetaV3).operations();
+      break;
+    default:
+      throw new Error('Unexpected transaction meta switch value');
+  }
+  const sequenceNumber = operations
+    .flatMap(op => op.changes())
+    .find(c => c.switch() === xdr.LedgerEntryChangeType.ledgerEntryCreated() &&
+              c.created().data().switch() === xdr.LedgerEntryType.account())
+    ?.created()
+    ?.data()
+    ?.account()
+    ?.seqNum()
+    ?.toString();
+
+  if (sequenceNumber) {
+    return sequenceNumber;
+  }
+  throw new Error('No account created in transaction');
+}
+
+/* eslint-disable jsdoc/no-undefined-types */
 /**
  * Handles the network connection to a Soroban RPC instance, exposing an
  * interface for requests to that instance.
  *
- * @constructor
+ * @alias module:rpc.Server
+ * @memberof module:rpc
  *
- * @param {string} serverURL Soroban-RPC Server URL (ex.
- *    `http://localhost:8000/soroban/rpc`).
- * @param {object} [opts] Options object
- * @param {boolean} [opts.allowHttp]  allows connecting to insecure http servers
+ * @param {string} serverURL Soroban-RPC Server URL (ex. `http://localhost:8000/soroban/rpc`).
+ * @param {module:rpc.Server.Options} [opts] Options object
+ * @param {boolean} [opts.allowHttp] Allows connecting to insecure http servers
  *    (default: `false`). This must be set to false in production deployments!
  *    You can also use {@link Config} class to set this globally.
- * @param {Record<string, string>} [opts.headers] allows setting custom headers
+ * @param {Record<string, string>} [opts.headers] Allows setting custom headers
  *
- * @see https://soroban.stellar.org/api/methods
+ * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods | API reference docs}
  */
-export class Server {
-  /** Soroban RPC Server URL (ex. `http://localhost:8000/soroban/rpc`). */
+export class RpcServer {
   public readonly serverURL: URI;
 
-  constructor(serverURL: string, opts: Server.Options = {}) {
+  constructor(serverURL: string, opts: RpcServer.Options = {}) {
+    /**
+     * RPC Server URL (ex. `http://localhost:8000/soroban/rpc`).
+     * @member {URI}
+     */
     this.serverURL = URI(serverURL);
 
     if (opts.headers && Object.keys(opts.headers).length !== 0) {
@@ -96,12 +197,12 @@ export class Server {
    * Needed to get the current sequence number for the account so you can build
    * a successful transaction with {@link TransactionBuilder}.
    *
-   * @param {string} address - The public address of the account to load.
+   * @param {string} address The public address of the account to load.
+   * @returns {Promise<Account>} A promise which resolves to the {@link Account}
+   * object with a populated sequence number
    *
-   * @returns {Promise<Account>}  a promise to the {@link Account} object with
-   *    a populated sequence number
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLedgerEntries | getLedgerEntries docs}
    *
-   * @see https://soroban.stellar.org/api/methods/getLedgerEntries
    * @example
    * const accountId = "GBZC6Y2Y7Q3ZQ2Y4QZJ2XZ3Z5YXZ6Z7Z2Y4QZJ2XZ3Z5YXZ6Z7Z2Y4";
    * server.getAccount(accountId).then((account) => {
@@ -117,6 +218,7 @@ export class Server {
 
     const resp = await this.getLedgerEntries(ledgerKey);
     if (resp.entries.length === 0) {
+      // eslint-disable-next-line prefer-promise-reject-errors
       return Promise.reject({
         code: 404,
         message: `Account not found: ${address}`
@@ -130,16 +232,18 @@ export class Server {
   /**
    * General node health check.
    *
-   * @returns {Promise<Api.GetHealthResponse>}   a promise to the
-   *    {@link Api.GetHealthResponse} object with the status of the
-   *    server (e.g. "healthy").
+   * @returns {Promise<Api.GetHealthResponse>} A promise which resolves to the
+   * {@link Api.GetHealthResponse} object with the status of the
+   * server (e.g. "healthy").
    *
-   * @see https://soroban.stellar.org/api/methods/getHealth
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getHealth | getLedgerEntries docs}
+   *
    * @example
    * server.getHealth().then((health) => {
    *   console.log("status:", health.status);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getHealth(): Promise<Api.GetHealthResponse> {
     return jsonrpc.postObject<Api.GetHealthResponse>(
       this.serverURL.toString(),
@@ -152,22 +256,22 @@ export class Server {
    *
    * Allows you to directly inspect the current state of a contract. This is a
    * backup way to access your contract data which may not be available via
-   * events or {@link Server.simulateTransaction}.
+   * events or {@link module:rpc.Server#simulateTransaction}.
    *
-   * @param {string|Address|Contract} contract    the contract ID containing the
+   * @param {string|Address|Contract} contract The contract ID containing the
    *    data to load as a strkey (`C...` form), a {@link Contract}, or an
    *    {@link Address} instance
-   * @param {xdr.ScVal} key   the key of the contract data to load
-   * @param {Durability} [durability=Durability.Persistent]   the "durability
+   * @param {xdr.ScVal} key The key of the contract data to load
+   * @param {module:rpc.Durability} [durability=Durability.Persistent] The "durability
    *    keyspace" that this ledger key belongs to, which is either 'temporary'
-   *    or 'persistent' (the default), see {@link Durability}.
-   *
-   * @returns {Promise<Api.LedgerEntryResult>}   the current data value
+   *    or 'persistent' (the default), see {@link module:rpc.Durability}.
+   * @returns {Promise<Api.LedgerEntryResult>} The current data value
    *
    * @warning If the data entry in question is a 'temporary' entry, it's
    *    entirely possible that it has expired out of existence.
    *
-   * @see https://soroban.stellar.org/api/methods/getLedgerEntries
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLedgerEntries | getLedgerEntries docs}
+   *
    * @example
    * const contractId = "CCJZ5DGASBWQXR5MPFCJXMBI333XE5U3FSJTNQU7RIKE3P5GN2K2WYD5";
    * const key = xdr.ScVal.scvSymbol("counter");
@@ -178,6 +282,7 @@ export class Server {
    *   console.log("latestLedger:", data.latestLedger);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getContractData(
     contract: string | Address | Contract,
     key: xdr.ScVal,
@@ -209,7 +314,7 @@ export class Server {
         throw new TypeError(`invalid durability: ${durability}`);
     }
 
-    let contractKey = xdr.LedgerKey.contractData(
+    const contractKey = xdr.LedgerKey.contractData(
       new xdr.LedgerKeyContractData({
         key,
         contract: scAddress,
@@ -220,6 +325,7 @@ export class Server {
     return this.getLedgerEntries(contractKey).then(
       (r: Api.GetLedgerEntriesResponse) => {
         if (r.entries.length === 0) {
+          // eslint-disable-next-line prefer-promise-reject-errors
           return Promise.reject({
             code: 404,
             message: `Contract data not found. Contract: ${Address.fromScAddress(
@@ -242,13 +348,10 @@ export class Server {
    * deployed on the Soroban network. The WASM bytecode represents the executable
    * code of the contract.
    *
-   * @param {string} contractId    the contract ID containing the
-   *    WASM bytecode to retrieve
-   *
-   * @returns {Promise<Buffer>}   a Buffer containing the WASM bytecode
-   *
+   * @param {string} contractId The contract ID containing the WASM bytecode to retrieve
+   * @returns {Promise<Buffer>} A Buffer containing the WASM bytecode
    * @throws {Error} If the contract or its associated WASM bytecode cannot be
-   *    found on the network.
+   * found on the network.
    *
    * @example
    * const contractId = "CCJZ5DGASBWQXR5MPFCJXMBI333XE5U3FSJTNQU7RIKE3P5GN2K2WYD5";
@@ -265,6 +368,7 @@ export class Server {
     const contractLedgerKey = new Contract(contractId).getFootprint();
     const response = await this.getLedgerEntries(contractLedgerKey);
     if (!response.entries.length || !response.entries[0]?.val) {
+      // eslint-disable-next-line prefer-promise-reject-errors
       return Promise.reject({code: 404, message: `Could not obtain contract hash from server`});
     }
 
@@ -285,12 +389,10 @@ export class Server {
    * deployed on the Soroban network using the contract's WASM hash. The WASM bytecode
    * represents the executable code of the contract.
    *
-   * @param {Buffer} wasmHash    the WASM hash of the contract
-   *
-   * @returns {Promise<Buffer>}   a Buffer containing the WASM bytecode
-   *
+   * @param {Buffer} wasmHash The WASM hash of the contract
+   * @returns {Promise<Buffer>} A Buffer containing the WASM bytecode
    * @throws {Error} If the contract or its associated WASM bytecode cannot be
-   *    found on the network.
+   * found on the network.
    *
    * @example
    * const wasmHash = Buffer.from("...");
@@ -315,6 +417,7 @@ export class Server {
 
     const responseWasm = await this.getLedgerEntries(ledgerKeyWasmHash);
     if (!responseWasm.entries.length || !responseWasm.entries[0]?.val) {
+      // eslint-disable-next-line prefer-promise-reject-errors
       return Promise.reject({ code: 404, message: "Could not obtain contract wasm from server" });
     }
     const wasmBuffer = responseWasm.entries[0].val.contractCode().code();
@@ -332,13 +435,12 @@ export class Server {
    * {@link xdr.LedgerKeyContractCode} ledger entry key (or see
    * {@link Contract.getFootprint}).
    *
-   * @param {xdr.ScVal[]} keys  one or more ledger entry keys to load
+   * @param {xdr.ScVal[]} keys One or more ledger entry keys to load
+   * @returns {Promise<Api.GetLedgerEntriesResponse>} The current on-chain
+   * values for the given ledger keys
    *
-   * @returns {Promise<Api.GetLedgerEntriesResponse>}  the current
-   *    on-chain values for the given ledger keys
-   *
-   * @see Server._getLedgerEntries
-   * @see https://soroban.stellar.org/api/methods/getLedgerEntries
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLedgerEntries | getLedgerEntries docs}
+   * @see RpcServer._getLedgerEntries
    * @example
    * const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
    * const key = xdr.LedgerKey.contractData(new xdr.LedgerKeyContractData({
@@ -355,12 +457,14 @@ export class Server {
    *   console.log("latestLedger:", response.latestLedger);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getLedgerEntries(
     ...keys: xdr.LedgerKey[]
   ): Promise<Api.GetLedgerEntriesResponse> {
     return this._getLedgerEntries(...keys).then(parseRawLedgerEntries);
   }
 
+  // eslint-disable-next-line require-await
   public async _getLedgerEntries(...keys: xdr.LedgerKey[]) {
     return jsonrpc
       .postObject<Api.RawGetLedgerEntriesResponse>(
@@ -371,18 +475,68 @@ export class Server {
       );
   }
 
+
+  /**
+   * Poll for a particular transaction with certain parameters.
+   *
+   * After submitting a transaction, clients can use this to poll for
+   * transaction completion and return a definitive state of success or failure.
+   *
+   * @param {string} hash   the transaction you're polling for
+   * @param {number} [opts.attempts] (optional) the number of attempts to make
+   *    before returning the last-seen status. By default or on invalid inputs,
+   *    try 5 times.
+   * @param {SleepStrategy} [opts.sleepStrategy] (optional) the amount of time
+   *    to wait for between each attempt. By default, sleep for 1 second between
+   *    each attempt.
+   *
+   * @return {Promise<Api.GetTransactionsResponse>} the response after a "found"
+   *    response (which may be success or failure) or the last response obtained
+   *    after polling the maximum number of specified attempts.
+   *
+   * @example
+   * const h = "c4515e3bdc0897f21cc5dbec8c82cf0a936d4741cb74a8e158eb51b9fb00411a";
+   * const txStatus = await server.pollTransaction(h, {
+   *    attempts: 100, // I'm a maniac
+   *    sleepStrategy: rpc.LinearSleepStrategy
+   * }); // this will take 5,050 seconds to complete
+   */
+  public async pollTransaction(
+    hash: string,
+    opts?: RpcServer.PollingOptions
+  ): Promise<Api.GetTransactionResponse> {
+    let maxAttempts: number = (
+      (opts?.attempts ?? 0) < 1
+      ? DEFAULT_GET_TRANSACTION_TIMEOUT
+      : (opts?.attempts ?? DEFAULT_GET_TRANSACTION_TIMEOUT)
+    ); // "positive and defined user value or default"
+
+    let foundInfo: Api.GetTransactionResponse;
+    for (let attempt = 1; attempt < maxAttempts; attempt++) {
+      foundInfo = await this.getTransaction(hash);
+      if (foundInfo.status !== Api.GetTransactionStatus.NOT_FOUND) {
+        return foundInfo;
+      }
+
+      await Utils.sleep((opts?.sleepStrategy ?? BasicSleepStrategy)(attempt));
+    }
+
+    return foundInfo!;
+  }
+
   /**
    * Fetch the details of a submitted transaction.
    *
    * After submitting a transaction, clients should poll this to tell when the
    * transaction has completed.
    *
-   * @param {string} hash   hex-encoded hash of the transaction to check
+   * @param {string} hash Hex-encoded hash of the transaction to check
+   * @returns {Promise<Api.GetTransactionResponse>} The status, result, and
+   *    other details about the transaction
    *
-   * @returns {Promise<Api.GetTransactionResponse>}  the status,
-   *    result, and other details about the transaction
+   * @see
+   * {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getTransaction | getTransaction docs}
    *
-   * @see https://soroban.stellar.org/api/methods/getTransaction
    * @example
    * const transactionHash = "c4515e3bdc0897f21cc5dbec8c82cf0a936d4741cb74a8e158eb51b9fb00411a";
    * server.getTransaction(transactionHash).then((tx) => {
@@ -392,38 +546,23 @@ export class Server {
    *   console.log("resultXdr:", tx.resultXdr);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getTransaction(
     hash: string
   ): Promise<Api.GetTransactionResponse> {
     return this._getTransaction(hash).then((raw) => {
-      let foundInfo: Omit<
+      const foundInfo: Omit<
         Api.GetSuccessfulTransactionResponse,
         keyof Api.GetMissingTransactionResponse
       > = {} as any;
 
       if (raw.status !== Api.GetTransactionStatus.NOT_FOUND) {
-        const meta = xdr.TransactionMeta.fromXDR(raw.resultMetaXdr!, 'base64');
-        foundInfo = {
-          ledger: raw.ledger!,
-          createdAt: raw.createdAt!,
-          applicationOrder: raw.applicationOrder!,
-          feeBump: raw.feeBump!,
-          envelopeXdr: xdr.TransactionEnvelope.fromXDR(
-            raw.envelopeXdr!,
-            'base64'
-          ),
-          resultXdr: xdr.TransactionResult.fromXDR(raw.resultXdr!, 'base64'),
-          resultMetaXdr: meta,
-          ...(meta.switch() === 3 &&
-            meta.v3().sorobanMeta() !== null &&
-            raw.status === Api.GetTransactionStatus.SUCCESS && {
-              returnValue: meta.v3().sorobanMeta()?.returnValue()
-            })
-        };
+        Object.assign(foundInfo, parseTransactionInfo(raw));
       }
 
       const result: Api.GetTransactionResponse = {
         status: raw.status,
+        txHash: hash,
         latestLedger: raw.latestLedger,
         latestLedgerCloseTime: raw.latestLedgerCloseTime,
         oldestLedger: raw.oldestLedger,
@@ -435,6 +574,7 @@ export class Server {
     });
   }
 
+  // eslint-disable-next-line require-await
   public async _getTransaction(
     hash: string
   ): Promise<Api.RawGetTransactionResponse> {
@@ -442,23 +582,62 @@ export class Server {
   }
 
   /**
+   * Fetch transactions starting from a given start ledger or a cursor. The end ledger is the latest ledger
+   * in that RPC instance.
+   *
+   * @param {Api.GetTransactionsRequest} request - The request parameters.
+   * @returns {Promise<Api.GetTransactionsResponse>} - A promise that resolves to the transactions response.
+   *
+   * @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getTransactions
+   * @example
+   * server.getTransactions({
+   *   startLedger: 10000,
+   *   limit: 10,
+   * }).then((response) => {
+   *   console.log("Transactions:", response.transactions);
+   *   console.log("Latest Ledger:", response.latestLedger);
+   *   console.log("Cursor:", response.cursor);
+   * });
+   */
+  public async getTransactions(request: Api.GetTransactionsRequest): Promise<Api.GetTransactionsResponse> {
+    return this._getTransactions(request).then((raw: Api.RawGetTransactionsResponse) => {
+      const result: Api.GetTransactionsResponse = {
+        transactions: raw.transactions.map(parseRawTransactions),
+        latestLedger: raw.latestLedger,
+        latestLedgerCloseTimestamp: raw.latestLedgerCloseTimestamp,
+        oldestLedger: raw.oldestLedger,
+        oldestLedgerCloseTimestamp: raw.oldestLedgerCloseTimestamp,
+        cursor: raw.cursor,
+      }
+      return result
+    });
+  }
+
+  // Add this private method to the Server class
+  private async _getTransactions(request: Api.GetTransactionsRequest): Promise<Api.RawGetTransactionsResponse> {
+    return jsonrpc.postObject(this.serverURL.toString(), 'getTransactions', request);
+  }
+
+  /**
    * Fetch all events that match a given set of filters.
    *
-   * The given filters (see {@link Api.EventFilter} for detailed fields)
-   * are combined only in a logical OR fashion, and all of the fields in each
-   * filter are optional.
+   * The given filters (see {@link module:rpc.Api.EventFilter | Api.EventFilter}
+   * for detailed fields) are combined only in a logical OR fashion, and all of
+   * the fields in each filter are optional.
    *
    * To page through events, use the `pagingToken` field on the relevant
    * {@link Api.EventResponse} object to set the `cursor` parameter.
    *
-   * @param {Server.GetEventsRequest} request   event filters
-   * @returns {Promise<Api.GetEventsResponse>}   a paginatable set of the
-   *    events matching the given event filters
+   * @param {module:rpc.Server.GetEventsRequest} request Event filters
+   * @returns {Promise<Api.GetEventsResponse>} A paginatable set of the events
+   * matching the given event filters
    *
-   * @see https://soroban.stellar.org/api/methods/getEvents
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getEvents | getEvents docs}
+   *
    * @example
    * server.getEvents({
    *    startLedger: 1000,
+   *    endLedger: 2000,
    *    filters: [
    *     {
    *      type: "contract",
@@ -479,14 +658,16 @@ export class Server {
    *    limit: 10,
    * });
    */
+  // eslint-disable-next-line require-await
   public async getEvents(
-    request: Server.GetEventsRequest
+    request: RpcServer.GetEventsRequest
   ): Promise<Api.GetEventsResponse> {
     return this._getEvents(request).then(parseRawEvents);
   }
 
+  // eslint-disable-next-line require-await
   public async _getEvents(
-    request: Server.GetEventsRequest
+    request: RpcServer.GetEventsRequest
   ): Promise<Api.RawGetEventsResponse> {
     return jsonrpc.postObject(this.serverURL.toString(), 'getEvents', {
       filters: request.filters ?? [],
@@ -496,6 +677,9 @@ export class Server {
       },
       ...(request.startLedger && {
         startLedger: request.startLedger
+      }),
+      ...(request.endLedger && {
+        endLedger: request.endLedger
       })
     });
   }
@@ -503,10 +687,11 @@ export class Server {
   /**
    * Fetch metadata about the network this Soroban RPC server is connected to.
    *
-   * @returns {Promise<Api.GetNetworkResponse>}  metadata about the
-   *    current network this RPC server is connected to
+   * @returns {Promise<Api.GetNetworkResponse>} Metadata about the current
+   * network this RPC server is connected to
    *
-   * @see https://soroban.stellar.org/api/methods/getNetwork
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getNetwork | getNetwork docs}
+   *
    * @example
    * server.getNetwork().then((network) => {
    *   console.log("friendbotUrl:", network.friendbotUrl);
@@ -514,8 +699,9 @@ export class Server {
    *   console.log("protocolVersion:", network.protocolVersion);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getNetwork(): Promise<Api.GetNetworkResponse> {
-    return await jsonrpc.postObject(this.serverURL.toString(), 'getNetwork');
+    return jsonrpc.postObject(this.serverURL.toString(), 'getNetwork');
   }
 
   /**
@@ -525,7 +711,8 @@ export class Server {
    * @returns {Promise<Api.GetLatestLedgerResponse>}   metadata about the
    *    latest ledger on the network that this RPC server is connected to
    *
-   * @see https://soroban.stellar.org/api/methods/getLatestLedger
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/getLatestLedger | getLatestLedger docs}
+   *
    * @example
    * server.getLatestLedger().then((response) => {
    *   console.log("hash:", response.id);
@@ -533,6 +720,7 @@ export class Server {
    *   console.log("protocolVersion:", response.protocolVersion);
    * });
    */
+  // eslint-disable-next-line require-await
   public async getLatestLedger(): Promise<Api.GetLatestLedgerResponse> {
     return jsonrpc.postObject(this.serverURL.toString(), 'getLatestLedger');
   }
@@ -541,20 +729,19 @@ export class Server {
    * Submit a trial contract invocation to get back return values, expected
    * ledger footprint, expected authorizations, and expected costs.
    *
-   * @param {Transaction | FeeBumpTransaction} transaction  the transaction to
+   * @param {Transaction | FeeBumpTransaction} tx the transaction to
    *    simulate, which should include exactly one operation (one of
    *    {@link xdr.InvokeHostFunctionOp}, {@link xdr.ExtendFootprintTTLOp}, or
    *    {@link xdr.RestoreFootprintOp}). Any provided footprint or auth
    *    information will be ignored.
-   *
-   * @returns {Promise<Api.SimulateTransactionResponse>}   an object with the
+   * @returns {Promise<Api.SimulateTransactionResponse>} An object with the
    *    cost, footprint, result/auth requirements (if applicable), and error of
    *    the transaction
    *
-   * @see https://developers.stellar.org/docs/glossary/transactions/
-   * @see https://soroban.stellar.org/api/methods/simulateTransaction
-   * @see Server.prepareTransaction
-   * @see assembleTransaction
+   * @see {@link https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/operations-and-transactions | transaction docs}
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/simulateTransaction | simulateTransaction docs}
+   * @see module:rpc.Server#prepareTransaction
+   * @see module:rpc.assembleTransaction
    *
    * @example
    * const contractId = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE';
@@ -579,17 +766,19 @@ export class Server {
    *   console.log("latestLedger:", sim.latestLedger);
    * });
    */
+  // eslint-disable-next-line require-await
   public async simulateTransaction(
     tx: Transaction | FeeBumpTransaction,
-    addlResources?: Server.ResourceLeeway
+    addlResources?: RpcServer.ResourceLeeway
   ): Promise<Api.SimulateTransactionResponse> {
     return this._simulateTransaction(tx, addlResources)
       .then(parseRawSimulation);
   }
 
+  // eslint-disable-next-line require-await
   public async _simulateTransaction(
     transaction: Transaction | FeeBumpTransaction,
-    addlResources?: Server.ResourceLeeway
+    addlResources?: RpcServer.ResourceLeeway
   ): Promise<Api.RawSimulateTransactionResponse> {
     return jsonrpc.postObject(
       this.serverURL.toString(),
@@ -614,15 +803,16 @@ export class Server {
    *
    * The returned transaction will also have an updated fee that is the sum of
    * fee set on incoming transaction with the contract resource fees estimated
-   * from simulation. It is adviseable to check the fee on returned transaction
+   * from simulation. It is advisable to check the fee on returned transaction
    * and validate or take appropriate measures for interaction with user to
    * confirm it is acceptable.
    *
-   * You can call the {@link Server.simulateTransaction} method directly first
-   * if you want to inspect estimated fees for a given transaction in detail
-   * first, then re-assemble it manually or via {@link assembleTransaction}.
+   * You can call the {@link module:rpc.Server#simulateTransaction} method
+   * directly first if you want to inspect estimated fees for a given
+   * transaction in detail first, then re-assemble it manually or via
+   * {@link module:rpc.assembleTransaction}.
    *
-   * @param {Transaction | FeeBumpTransaction} transaction  the transaction to
+   * @param {Transaction | FeeBumpTransaction} tx  the transaction to
    *    prepare. It should include exactly one operation, which must be one of
    *    {@link xdr.InvokeHostFunctionOp}, {@link xdr.ExtendFootprintTTLOp},
    *    or {@link xdr.RestoreFootprintOp}.
@@ -632,17 +822,17 @@ export class Server {
    *    from the simulation. In other words, if you include auth entries, you
    *    don't care about the auth returned from the simulation. Other fields
    *    (footprint, etc.) will be filled as normal.
-   *
-   * @returns {Promise<Transaction | FeeBumpTransaction>}   a copy of the
+   * @returns {Promise<Transaction | FeeBumpTransaction>} A copy of the
    *    transaction with the expected authorizations (in the case of
    *    invocation), resources, and ledger footprints added. The transaction fee
    *    will also automatically be padded with the contract's minimum resource
    *    fees discovered from the simulation.
-   *
-   * @see assembleTransaction
-   * @see https://soroban.stellar.org/api/methods/simulateTransaction
    * @throws {jsonrpc.Error<any>|Error|Api.SimulateTransactionErrorResponse}
-   *    if simulation fails
+   *    If simulation fails
+   *
+   * @see module:rpc.assembleTransaction
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/simulateTransaction | simulateTransaction docs}
+   *
    * @example
    * const contractId = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE';
    * const contract = new StellarSdk.Contract(contractId);
@@ -677,7 +867,7 @@ export class Server {
   public async prepareTransaction(tx: Transaction | FeeBumpTransaction) {
     const simResponse = await this.simulateTransaction(tx);
     if (Api.isSimulationError(simResponse)) {
-      throw simResponse.error;
+      throw new Error(simResponse.error);
     }
 
     return assembleTransaction(tx, simResponse).build();
@@ -688,15 +878,16 @@ export class Server {
    *
    * Unlike Horizon, Soroban RPC does not wait for transaction completion. It
    * simply validates the transaction and enqueues it. Clients should call
-   * {@link Server.getTransactionStatus} to learn about transaction
+   * {@link module:rpc.Server#getTransaction} to learn about transaction
    * success/failure.
    *
    * @param {Transaction | FeeBumpTransaction} transaction  to submit
    * @returns {Promise<Api.SendTransactionResponse>}   the
    *    transaction id, status, and any error if available
    *
-   * @see https://developers.stellar.org/docs/glossary/transactions/
-   * @see https://soroban.stellar.org/api/methods/sendTransaction
+   * @see {@link https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/operations-and-transactions | transaction docs}
+   * @see {@link https://developers.stellar.org/docs/data/rpc/api-reference/methods/sendTransaction | sendTransaction docs}
+   *
    * @example
    * const contractId = 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE';
    * const contract = new StellarSdk.Contract(contractId);
@@ -726,12 +917,14 @@ export class Server {
    *   console.log("errorResultXdr:", result.errorResultXdr);
    * });
    */
+  // eslint-disable-next-line require-await
   public async sendTransaction(
     transaction: Transaction | FeeBumpTransaction
   ): Promise<Api.SendTransactionResponse> {
     return this._sendTransaction(transaction).then(parseRawSendTransaction);
   }
 
+  // eslint-disable-next-line require-await
   public async _sendTransaction(
     transaction: Transaction | FeeBumpTransaction
   ): Promise<Api.RawSendTransactionResponse> {
@@ -743,25 +936,23 @@ export class Server {
   }
 
   /**
-   * Fund a new account using the network's friendbot faucet, if any.
+   * Fund a new account using the network's Friendbot faucet, if any.
    *
-   * @param {string | Account} address  the address or account instance that we
-   *    want to create and fund with friendbot
-   * @param {string} [friendbotUrl]     optionally, an explicit address for
+   * @param {string | Account} address The address or account instance that we
+   *    want to create and fund with Friendbot
+   * @param {string} [friendbotUrl] Optionally, an explicit address for
    *    friendbot (by default: this calls the Soroban RPC
-   *    {@link Server.getNetwork} method to try to discover this network's
-   *    Friendbot url).
-   *
-   * @returns {Promise<Account>}  an {@link Account} object for the created
+   *    {@link module:rpc.Server#getNetwork | getNetwork} method to try to
+   *    discover this network's Friendbot url).
+   * @returns {Promise<Account>} An {@link Account} object for the created
    *    account, or the existing account if it's already funded with the
    *    populated sequence number (note that the account will not be "topped
    *    off" if it already exists)
+   * @throws If Friendbot is not configured on this network or request failure
    *
-   * @throws if Friendbot is not configured on this network or request failure
+   * @see {@link https://developers.stellar.org/docs/learn/networks#friendbot | Friendbot docs}
+   * @see {@link module:Friendbot.Api.Response}
    *
-   * @see
-   * https://developers.stellar.org/docs/fundamentals-and-concepts/testnet-and-pubnet#friendbot
-   * @see Friendbot.Response
    * @example
    * server
    *    .requestAirdrop("GBZC6Y2Y7Q3ZQ2Y4QZJ2XZ3Z5YXZ6Z7Z2Y4QZJ2XZ3Z5YXZ6Z7Z2Y4")
@@ -786,10 +977,17 @@ export class Server {
         `${friendbotUrl}?addr=${encodeURIComponent(account)}`
       );
 
-      const meta = xdr.TransactionMeta.fromXDR(
-        response.data.result_meta_xdr,
-        'base64'
-      );
+      let meta: xdr.TransactionMeta;
+      if (!response.data.result_meta_xdr) {
+        const txMeta = await this.getTransaction(response.data.hash)
+        if (txMeta.status !== Api.GetTransactionStatus.SUCCESS) {
+          throw new Error(`Funding account ${address} failed`);
+        }
+        meta = txMeta.resultMetaXdr;
+      } else {
+        meta = xdr.TransactionMeta.fromXDR(response.data.result_meta_xdr, 'base64');
+      }
+
       const sequence = findCreatedAccountSequenceInTransactionMeta(meta);
       return new Account(account, sequence);
     } catch (error: any) {
@@ -802,38 +1000,133 @@ export class Server {
       throw error;
     }
   }
-}
 
-function findCreatedAccountSequenceInTransactionMeta(
-  meta: xdr.TransactionMeta
-): string {
-  let operations: xdr.OperationMeta[] = [];
-  switch (meta.switch()) {
-    case 0:
-      operations = meta.operations();
-      break;
-    case 1:
-    case 2:
-    case 3: // all three have the same interface
-      operations = (meta.value() as xdr.TransactionMetaV3).operations();
-      break;
-    default:
-      throw new Error('Unexpected transaction meta switch value');
+  /**
+   * Provides an analysis of the recent fee stats for regular and smart
+   * contract operations.
+   *
+   * @returns {Promise<Api.GetFeeStatsResponse>}  the fee stats
+   * @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getFeeStats
+   */
+  // eslint-disable-next-line require-await
+  public async getFeeStats(): Promise<Api.GetFeeStatsResponse> {
+    return jsonrpc.postObject(this.serverURL.toString(), 'getFeeStats');
   }
 
-  for (const op of operations) {
-    for (const c of op.changes()) {
-      if (c.switch() !== xdr.LedgerEntryChangeType.ledgerEntryCreated()) {
-        continue;
-      }
-      const data = c.created().data();
-      if (data.switch() !== xdr.LedgerEntryType.account()) {
-        continue;
-      }
-
-      return data.account().seqNum().toString();
-    }
+  /**
+   * Provides information about the current version details of the Soroban RPC and captive-core
+   *
+   * @returns {Promise<Api.GetVersionInfoResponse>} the version info
+   * @see https://developers.stellar.org/docs/data/rpc/api-reference/methods/getVersionInfo
+   */
+  // eslint-disable-next-line require-await
+  public async getVersionInfo(): Promise<Api.GetVersionInfoResponse> {
+    return jsonrpc.postObject(this.serverURL.toString(), 'getVersionInfo');
   }
 
-  throw new Error('No account created in transaction');
+  /**
+   * Returns a contract's balance of a particular SAC asset, if any.
+   *
+   * This is a convenience wrapper around {@link Server.getLedgerEntries}.
+   *
+   * @param {string}  contractId    the contract ID (string `C...`) whose
+   *    balance of `sac` you want to know
+   * @param {Asset}   sac     the built-in SAC token (e.g. `USDC:GABC...`) that
+   *    you are querying from the given `contract`.
+   * @param {string}  [networkPassphrase] optionally, the network passphrase to
+   *    which this token applies. If omitted, a request about network
+   *    information will be made (see {@link getNetwork}), since contract IDs
+   *    for assets are specific to a network. You can refer to {@link Networks}
+   *    for a list of built-in passphrases, e.g., `Networks.TESTNET`.
+   *
+   * @returns {Promise<Api.BalanceResponse>}, which will contain the balance
+   *    entry details if and only if the request returned a valid balance ledger
+   *    entry. If it doesn't, the `balanceEntry` field will not exist.
+   *
+   * @throws {TypeError} If `contractId` is not a valid contract strkey (C...).
+   *
+   * @see getLedgerEntries
+   * @see https://developers.stellar.org/docs/tokens/stellar-asset-contract
+   *
+   * @example
+   * // assume `contractId` is some contract with an XLM balance
+   * // assume server is an instantiated `Server` instance.
+   * const entry = (await server.getSACBalance(
+   *   new Address(contractId),
+   *   Asset.native(),
+   *   Networks.PUBLIC
+   * ));
+   *
+   * // assumes BigInt support:
+   * console.log(
+   *   entry.balanceEntry ?
+   *   BigInt(entry.balanceEntry.amount) :
+   *   "Contract has no XLM");
+   */
+  public async getSACBalance(
+    contractId: string,
+    sac: Asset,
+    networkPassphrase?: string
+  ): Promise<Api.BalanceResponse> {
+      if (!StrKey.isValidContract(contractId)) {
+        throw new TypeError(`expected contract ID, got ${contractId}`);
+      }
+
+      // Call out to RPC if passphrase isn't provided.
+      const passphrase: string = networkPassphrase
+        ?? await this.getNetwork().then(n => n.passphrase);
+
+      // Turn SAC into predictable contract ID
+      const sacId = sac.contractId(passphrase);
+
+      // Rust union enum type with "Balance(ScAddress)" structure
+      const key = xdr.ScVal.scvVec([
+        nativeToScVal("Balance", { type: "symbol" }),
+        nativeToScVal(contractId, { type: "address" }),
+      ]);
+
+      // Note a quirk here: the contract address in the key is the *token*
+      // rather than the *holding contract*. This is because each token stores a
+      // balance entry for each contract, not the other way around (i.e. XLM
+      // holds a reserve for contract X, rather that contract X having a balance
+      // of N XLM).
+      const ledgerKey = xdr.LedgerKey.contractData(
+        new xdr.LedgerKeyContractData({
+          contract: new Address(sacId).toScAddress(),
+          durability: xdr.ContractDataDurability.persistent(),
+          key
+        })
+      );
+
+      const response = await this.getLedgerEntries(ledgerKey);
+      if (response.entries.length === 0) {
+        return { latestLedger: response.latestLedger };
+      }
+
+      const {
+        lastModifiedLedgerSeq,
+        liveUntilLedgerSeq,
+        val
+      } = response.entries[0];
+
+      if (val.switch().value !== xdr.LedgerEntryType.contractData().value) {
+        return { latestLedger: response.latestLedger };
+      }
+
+      const entry = scValToNative(val.contractData().val());
+
+      // Since we are requesting a SAC's contract data, we know for a fact that
+      // it should follow the expected structure format. Thus, we can presume
+      // these fields exist:
+      return {
+        latestLedger: response.latestLedger,
+        balanceEntry: {
+          liveUntilLedgerSeq,
+          lastModifiedLedgerSeq,
+          amount: entry.amount.toString(),
+          authorized: entry.authorized,
+          clawback: entry.clawback,
+        }
+      };
+  }
 }
